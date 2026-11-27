@@ -154,15 +154,11 @@ VOTES = "(s.bonus_votes + (SELECT COALESCE(SUM(weight), 0) FROM votes WHERE sugg
 
 
 def suggestions_left(conn, login: str) -> int:
-    """Ideas per day come from the level (DESIGN.md §10.3). A Player gets one free idea ever, so newcomers can
-    always take part (the milestone check is separate)."""
+    """Ideas per day come from the level (DESIGN.md §10.3). Everyone gets at least 1 per day; the milestone
+    check is separate."""
     since = (datetime.now(UTC) - timedelta(days=1)).isoformat(timespec="seconds")
     used = conn.execute("SELECT COUNT(*) FROM suggestions WHERE login = ? AND created_at >= ?", (login, since)).fetchone()[0]
-    per_day = xp.totals(conn, login)["per_day"]
-    if per_day == 0:
-        ever = conn.execute("SELECT 1 FROM suggestions WHERE login = ? LIMIT 1", (login,)).fetchone()
-        return 0 if ever else 1
-    return max(0, per_day - used)
+    return max(0, xp.totals(conn, login)["per_day"] - used)
 
 
 def page(request: Request, name: str, **ctx) -> HTMLResponse:

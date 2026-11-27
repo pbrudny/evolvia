@@ -125,7 +125,7 @@ def test_suggest_needs_a_milestone_and_is_limited(monkeypatch):
     assert r.status_code == 429
     # a milestone in the parent version also unlocks the child version
     page = alice.get(f"/g/{GAME}/v/{V1}").text
-    assert "You used your free idea" in page
+    assert "You used today's idea (1 per day" in page
 
 
 def test_votes(monkeypatch):

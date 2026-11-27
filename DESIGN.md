@@ -248,13 +248,13 @@ Every award is one row in an append-only history: player, points, reason, game, 
 
 | Level | Current XP | Unlocks |
 |-------|-----------|---------|
-| Player | 0 | play, vote |
+| Player | 0 | play, vote, 1 suggestion per day |
 | Contributor | 20 | 1 suggestion per day |
 | Builder | 100 | 2 per day; your suggestions start with +3 votes |
 | Architect | 300 | 3 per day; bigger changes (new mechanics); can open an idea round |
 | Curator | 600 | your vote counts double; can flag suggestions and versions; can propose constitution changes |
 
-Every player gets one free suggestion after their first milestone, even before Contributor, so newcomers can always take part.
+Every player can suggest once per day after their first milestone, even before Contributor, so newcomers can always take part (milder than the first plan of one free suggestion, changed 27 Nov).
 
 Build queue priority:
 
