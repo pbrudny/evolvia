@@ -269,6 +269,13 @@ def run_loop(once: bool) -> None:
     if not TOKEN:
         sys.exit("EVOLVIA_WORKER_TOKEN is not set")
     while True:
+        # Don't take a job we can't build: the gates need Docker (Docker Desktop may be closed).
+        if run(["docker", "info"], check=False, timeout=30).returncode != 0:
+            log("Docker is not running, skipping this check")
+            if once:
+                return
+            time.sleep(120)
+            continue
         job = api("POST", "/api/worker/next")["job"]
         if job:
             try:
