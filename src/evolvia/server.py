@@ -438,7 +438,11 @@ def accept(request: Request, sid: int):
         raise HTTPException(403)
     with db.connect() as conn:
         s = conn.execute("SELECT * FROM suggestions WHERE id = ?", (sid,)).fetchone()
-        if not s or s["status"] not in ("open", "failed"):
+        if not s:
+            raise HTTPException(404)
+        if s["status"] in ("accepted", "building", "live"):  # already on its way (a second click or an old page)
+            return RedirectResponse(f"/g/{s['game']}/v/{s['base_version']}#builds", status_code=303)
+        if s["status"] not in ("open", "failed"):
             raise HTTPException(400, "Only open or failed ideas can be sent to the builder")
         set_status(conn, sid, "accepted", "Waiting for the builder")
         db.emit(conn, "SuggestionAccepted", login, game=s["game"], suggestion=sid, title=s["title"], author=s["login"])

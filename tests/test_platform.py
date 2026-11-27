@@ -170,6 +170,7 @@ def test_build_flow(monkeypatch):
     assert dave.post(f"/suggestions/{sid}/accept", follow_redirects=False).status_code == 403   # not an admin
     boss = client_as("boss", monkeypatch)
     assert boss.post(f"/suggestions/{sid}/accept", follow_redirects=False).status_code == 303
+    assert boss.post(f"/suggestions/{sid}/accept", follow_redirects=False).status_code == 303   # second click: no error
 
     job = plain.post("/api/worker/next", headers=W).json()["job"]
     assert job["suggestion"] == sid and job["repo"] == "pbrudny/evolvia-template" and job["author"] == "alice"
