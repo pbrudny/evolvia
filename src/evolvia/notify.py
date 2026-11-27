@@ -32,7 +32,7 @@ def _load_token() -> str | None:
         return os.environ[TOKEN_KEY]
     if not WITH_SECRETS.exists():
         return None
-    p = subprocess.run([str(WITH_SECRETS), "--only", TOKEN_KEY, "--export"], capture_output=True, text=True, timeout=60)
+    p = subprocess.run([str(WITH_SECRETS), "--export"], capture_output=True, text=True, timeout=60)
     for line in p.stdout.splitlines():
         key, _, value = line.removeprefix("export ").partition("=")
         if key.strip() == TOKEN_KEY:
@@ -97,8 +97,7 @@ def render(e: dict, names: dict) -> tuple[str, str | None, bool] | None:
     if t == "SuggestionRejected":
         return f":no_entry_sign: Not built: {esc(d.get('reason')) or 'rejected'}", f"s{d['suggestion']}", False
     if t == "BuildFailed" and d.get("suggestion"):
-        return (f":warning: The build failed: {esc(d.get('reason'))[:300]}\nThe instructor can retry it.",
-                f"s{d['suggestion']}", False)
+        return ":warning: The build failed this time. The instructor can retry it.", f"s{d['suggestion']}", False
     if t == "BuildSucceeded":
         log = names.get(("changelog", d.get("version")), "")
         return (f":tada: *New version of {esc(game)} is live*, idea by @{esc(d.get('author'))}!\n{esc(log)}\n"
