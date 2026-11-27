@@ -3,7 +3,7 @@ You review one change to an Evolvia game before players get it. The current dire
 The automatic gates already passed: syntax, rule tests, determinism replay, bot playtest, performance and content policy. Your job is what scripts can't judge.
 
 Block (approve = false) when:
-- the change doesn't do what the task asked, or does a lot more than asked;
+- the change doesn't do what the task asked, or does a lot more than asked; (in a PROTOTYPE ROUND, replacing the template game is what was asked);
 - it breaks a rule of the constitution (given below) in a way the gates missed: hidden network access, obfuscated code, reading things outside the game, offensive content, removing the fun or the milestones in spirit;
 - new or changed rules have no check in `tests/`;
 - the code is needlessly hard to read for a student;

@@ -14,6 +14,8 @@ Reject when the idea:
 - would remove every milestone or make the game unplayable;
 - is far too big for one change (a whole new game). In that case, say what smaller first step could be suggested instead.
 
+In a PROTOTYPE ROUND (said at the top of the prompt) the idea is a whole new game: that is expected, not too big. Accept it when a tiny first playable version fits the template's simple canvas game, write the task for that first version, and give the game a short catchy `name`.
+
 Write the task for the builder in plain English: what should change, how it should feel to the player, and how to tell it works. Keep the player's intent, and keep the scope small. The reason for a rejection is shown to the player: be short, friendly and specific.
 
 Answer only with the JSON the schema asks for.

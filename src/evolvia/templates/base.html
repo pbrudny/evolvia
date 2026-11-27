@@ -10,6 +10,7 @@
   <header class="top">
     <a class="brand" href="/">Evolvia <span>play, create, evolve</span></a>
     <nav>
+      <a href="/rounds">Idea rounds</a>
       {% if me %}
         <a class="who" href="/p/{{ me }}">@{{ me }}{% if my_xp %} <span class="lvl">{{ my_xp.level }} · {{ my_xp.current }} XP</span>{% endif %}</a>
         <form method="post" action="/logout"><button class="link">Sign out</button></form>

@@ -5,6 +5,13 @@
   <p>Play a game. Reach a milestone. Then tell us <strong>what if…?</strong> Players vote, AI builds the best idea, and a few minutes later there is a new version to play. Every version stays playable, so the game grows like a tree.</p>
 </section>
 
+{% if current %}
+<a class="round-banner" href="/rounds/{{ current.id }}">
+  <strong>{{ current.title }}</strong>
+  <span>{% if current.status == 'ideas' %}is open: post a game idea and vote for the next game{% elif current.status == 'prototyping' %}: the top ideas are being built as prototypes{% elif current.status == 'voting' %}: play the prototypes and vote for the next game{% else %}: the winner is becoming a game{% endif %} ▶</span>
+</a>
+{% endif %}
+
 <section>
   <h2>Games</h2>
   {% if games %}

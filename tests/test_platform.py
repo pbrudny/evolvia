@@ -357,3 +357,99 @@ def test_profile_and_admin_csv(monkeypatch):
     csv_text = client_as("boss", monkeypatch).get("/admin/xp.csv").text
     assert "login,name,level,current_xp,lifetime_xp,live_suggestions,confirmed_bugs" in csv_text
     assert "alice,Alice Example,Contributor,36,36,1,0" in csv_text
+
+
+# ---------- idea rounds and prototype rounds ----------
+
+def fake_install_into_db(game, repo, sha, **kw):
+    vid = f"{game}-{sha[:7]}"
+    with db.connect() as conn:
+        conn.execute("INSERT OR REPLACE INTO versions (id, game, sha, parent, milestones, changelog, credited_login, created_at) "
+                     "VALUES (?, ?, ?, NULL, ?, ?, ?, ?)", (vid, game, sha, json.dumps(MILESTONES), kw.get("changelog", ""),
+                                                            kw.get("credited_login"), db.now()))
+    return vid
+
+
+def test_idea_round_to_new_game(monkeypatch):
+    monkeypatch.setattr(server, "install", fake_install_into_db)
+    plain = TestClient(server.app, base_url="http://platform.test")
+    with db.connect() as conn:   # earlier tests may have left work for the worker
+        conn.execute("UPDATE suggestions SET status = 'live' WHERE status IN ('open', 'accepted', 'building')")
+    ivy = client_as("ivy", monkeypatch)
+    assert ivy.post("/rounds", data={"title": "Round 1"}, follow_redirects=False).status_code == 403   # not an Architect
+    boss = client_as("boss", monkeypatch)
+    r = boss.post("/rounds", data={"title": "Round 1", "idea_hours": 1, "vote_hours": 1}, follow_redirects=False)
+    rid = int(r.headers["location"].rsplit("/", 1)[1])
+    assert boss.post("/rounds", data={"title": "Another"}, follow_redirects=False).status_code == 400  # one at a time
+    assert "Round 1" in plain.get("/").text
+
+    ideas = {}
+    for login, title in [("ivy", "you steal seconds from others"), ("jack", "a snake that grows backwards"),
+                         ("kim", "tetris with gravity flipping"), ("leo", "a tiny farm defended by bees")]:
+        c = client_as(login, monkeypatch)
+        assert c.post(f"/rounds/{rid}/ideas", data={"title": title}, follow_redirects=False).status_code == 303
+        with db.connect() as conn:
+            ideas[login] = conn.execute("SELECT id FROM ideas WHERE login = ? AND round = ?", (login, rid)).fetchone()["id"]
+    assert ivy.post(f"/rounds/{rid}/ideas", data={"title": "a second idea"}, follow_redirects=False).status_code == 429
+    assert ivy.post(f"/ideas/{ideas['ivy']}/vote", follow_redirects=False).status_code == 400          # own idea
+    for voter, idea in [("jack", "ivy"), ("kim", "ivy"), ("ivy", "jack"), ("leo", "kim")]:
+        client_as(voter, monkeypatch).post(f"/ideas/{ideas[idea]}/vote", follow_redirects=False)
+
+    boss.post(f"/rounds/{rid}/next", follow_redirects=False)          # end the idea phase now
+    with db.connect() as conn:
+        queued = [r["id"] for r in conn.execute("SELECT id FROM ideas WHERE status = 'queued' ORDER BY id")]
+    assert queued == [ideas["ivy"], ideas["jack"], ideas["kim"]]   # top 3; leo's idea stays on the board
+
+    jobs = [plain.post("/api/worker/next", headers=W).json()["job"] for _ in range(3)]
+    assert [j["kind"] for j in jobs] == ["prototype"] * 3 and jobs[0]["repo"] == "pbrudny/evolvia-prototypes"
+    assert plain.post(jobs[0]["progress"], headers=W, json={"message": "Writing the code…"}).json() == {"ok": True}
+    plain.post(jobs[0]["result"], headers=W, json={"status": "done", "sha": "1" * 40, "changelog": "Steal time!", "name": "Time Thief"})
+    plain.post(jobs[1]["result"], headers=W, json={"status": "done", "sha": "2" * 40, "changelog": "Backwards.", "name": "Snake Back"})
+    plain.post(jobs[2]["result"], headers=W, json={"status": "failed", "reason": "gates kept failing"})
+    with db.connect() as conn:
+        assert server.round_row(conn, rid)["status"] == "voting"
+    page = plain.get(f"/rounds/{rid}").text
+    assert "Time Thief" in page and "Snake Back" in page and f"/g/proto-{ideas['ivy']}/v/" in page
+
+    # voting needs a milestone in that prototype
+    proto_v = f"proto-{ideas['ivy']}-1111111"
+    assert "Prototype" in ivy.get(f"/g/proto-{ideas['ivy']}/v/{proto_v}").text
+    assert ivy.post(f"/g/proto-{ideas['ivy']}/v/{proto_v}/suggest", data={"title": "more time"}).status_code == 400
+    assert jack_votes(monkeypatch, rid, ideas["ivy"]) == 403
+    s = client_as("jack", monkeypatch).post("/api/sessions", json={"version": proto_v, "seed": 1}).json()["session"]
+    age_session(s, 60)
+    client_as("jack", monkeypatch).post(f"/api/sessions/{s}/milestone", json={"id": "level3"})
+    assert jack_votes(monkeypatch, rid, ideas["ivy"]) == 303
+
+    boss.post(f"/rounds/{rid}/next", follow_redirects=False)          # end voting now
+    with db.connect() as conn:
+        r = server.round_row(conn, rid)
+        assert (r["status"], r["winner"], r["game"]) == ("creating", ideas["ivy"], "time-thief")
+        st = {row["login"]: row["status"] for row in conn.execute("SELECT login, status FROM ideas WHERE round = ?", (rid,))}
+    assert st == {"ivy": "won", "jack": "open", "kim": "open", "leo": "open"}   # the others stay on the board
+    assert any(h["reason"] == "prototype" and h["points"] == 50 for h in xp_history("ivy"))
+
+    job = plain.post("/api/worker/next", headers=W).json()["job"]
+    assert job["kind"] == "create_game" and job["slug"] == "time-thief" and job["sha"] == "1" * 40
+    assert plain.post("/api/worker/next", headers=W).json()["job"] is None   # handed out once
+    r = plain.post(job["result"], headers=W, json={"status": "done", "repo": "pbrudny/evolvia-time-thief", "sha": "1" * 40})
+    assert r.json()["ok"]
+    with db.connect() as conn:
+        g = conn.execute("SELECT * FROM games WHERE slug = 'time-thief'").fetchone()
+        assert g["kind"] == "game" and g["repo"] == "pbrudny/evolvia-time-thief" and g["main_version"]
+        assert server.round_row(conn, rid)["status"] == "closed"
+    home = plain.get("/").text
+    assert "Time Thief" in home and "proto-" not in home
+    types = [e["type"] for e in plain.get("/api/events").json()]
+    for t in ("IdeaRoundOpened", "IdeaSubmitted", "IdeaVoted", "IdeaRoundClosed", "PrototypeRequested", "PrototypeBuilt",
+              "PrototypeVoted", "GameCreated"):
+        assert t in types, t
+
+
+def jack_votes(monkeypatch, rid, idea):
+    return client_as("jack", monkeypatch).post(f"/rounds/{rid}/vote", data={"idea": idea}, follow_redirects=False).status_code
+
+
+def xp_history(login):
+    with db.connect() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM xp WHERE login = ?", (login,))]

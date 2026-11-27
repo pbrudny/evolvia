@@ -36,6 +36,13 @@
       </ul>
     </section>
 
+    {% if proto %}
+    <section>
+      <h2>Prototype</h2>
+      <p>A prototype in <a href="/rounds/{{ proto.id }}">{{ proto.title }}</a>, from the idea of @{{ proto.idea_login }}: {{ proto.idea_title }}</p>
+      <p class="muted">Reach a milestone here, then vote for it on the round page.</p>
+    </section>
+    {% else %}
     <section id="whatif">
       <h2>What if…?</h2>
       {% if not me %}
@@ -54,9 +61,11 @@
         </form>
       {% endif %}
     </section>
+    {% endif %}
   </aside>
 </div>
 
+{% if not proto %}
 <section id="suggestions">
   <h2>Ideas</h2>
   {% if auto_votes > 0 %}<p class="muted">The top idea with {{ auto_votes }} or more votes is built automatically by Claude.</p>{% endif %}
@@ -107,6 +116,7 @@
   </ul>
 </section>
 
+{% endif %}
 <section id="versions">
   <h2>Versions</h2>
   <p>{{ versions|length }} version{{ '' if versions|length == 1 else 's' }} so far. <a href="/g/{{ game.slug }}/tree?here={{ v.id }}">Open the Multiverse</a> to see how the game branched and play any version.</p>

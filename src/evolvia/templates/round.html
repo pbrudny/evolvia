@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}{{ r.title if r else 'Idea rounds' }} · Evolvia{% endblock %}
+{% set phases = [("ideas", "Ideas"), ("prototyping", "Prototypes are built"), ("voting", "Play and vote"), ("creating", "The winner becomes a game")] %}
+{% set phase_of = {"publishing": "creating", "closed": "done"} %}
+{% block main %}
+{% if r %}
+{% set ph = phase_of.get(r.status, r.status) %}
+<section class="round-head">
+  <p class="muted">Round {{ r.id }} · opened by @{{ r.opened_by }}</p>
+  <h1>{{ r.title }}</h1>
+  <ol class="phases">
+    {% set order = {"ideas": 0, "prototyping": 1, "voting": 2, "creating": 3, "done": 4} %}
+    {% for key, label in phases %}
+    <li class="{{ 'now' if key == ph else ('done' if order[ph] > loop.index0 else '') }}">{{ label }}</li>
+    {% endfor %}
+  </ol>
+  {% if r.status == 'ideas' %}
+    <p>Post one game idea for this round and vote for the ideas you like. When the idea phase ends (<time datetime="{{ r.ideas_end }}">{{ r.ideas_end[:16]|replace('T', ' ') }} UTC</time>), the top 3 ideas on the board are built as playable prototypes.</p>
+  {% elif r.status == 'prototyping' %}
+    <p>The AI builder is turning the top 3 ideas into small playable prototypes. This takes a few minutes each.</p>
+  {% elif r.status == 'voting' %}
+    <p>Play the prototypes. Reach a milestone in one to vote for it. You have one vote in this round. Voting ends <time datetime="{{ r.vote_end }}">{{ r.vote_end[:16]|replace('T', ' ') }} UTC</time>.</p>
+  {% elif r.status in ('creating', 'publishing') %}
+    <p>The winner is getting its own game repository. {{ r.note }}</p>
+  {% else %}
+    <p>{% if winner_game %}This round is over. The winner is <a href="/g/{{ winner_game.slug }}">{{ winner_game.name }}</a>, now a game everyone can evolve.{% else %}This round is over. {{ r.note }}{% endif %}</p>
+  {% endif %}
+  {% if is_admin and r.status in ('ideas', 'voting') %}
+  <form method="post" action="/rounds/{{ r.id }}/next"><button class="small link">End this phase now</button></form>
+  {% endif %}
+</section>
+
+{% if protos %}
+<section id="prototypes">
+  <h2>Prototypes</h2>
+  <div class="cards">
+    {% for p in protos %}
+    <div class="card proto{{ ' voted' if my_vote == p.id }}">
+      <h3>{{ p.game_name or p.title }}</h3>
+      <p>Idea by @{{ p.login }}: {{ p.title }}</p>
+      {% if p.status == 'built' or p.status == 'won' %}
+        {% if p.build_note %}<p>{{ p.build_note }}</p>{% endif %}
+        <p class="muted">{{ p.players }} player{{ '' if p.players == 1 else 's' }}{% if r.status != 'voting' %} · {{ p.proto_votes }} vote{{ '' if p.proto_votes == 1 else 's' }}{% endif %}</p>
+        <div class="actions start">
+          <a class="button small" href="/g/{{ p.proto_game }}/v/{{ p.proto_version }}">Play ▶</a>
+          {% if r.status == 'voting' and me %}
+            {% if my_vote == p.id %}<span class="pill">your vote</span>
+            {% elif my_vote %}
+            {% elif p.reached %}<form method="post" action="/rounds/{{ r.id }}/vote"><input type="hidden" name="idea" value="{{ p.id }}"><button class="small">Vote for this one</button></form>
+            {% else %}<span class="muted">Reach a milestone to vote</span>{% endif %}
+          {% endif %}
+          {% if p.status == 'won' %}<span class="pill">winner</span>{% endif %}
+        </div>
+      {% else %}
+        <p class="note">{% if p.status in ('queued', 'building') %}<span class="spinner" aria-hidden="true"></span>{% endif %}{{ p.build_note }}</p>
+        <span class="pill status-{{ p.status }}">{{ p.status }}</span>
+        {% if is_admin and p.status == 'failed' and r.status in ('prototyping', 'voting') %}<form method="post" action="/ideas/{{ p.id }}/retry"><button class="small link">Retry</button></form>{% endif %}
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section id="board">
+  <h2>Idea board</h2>
+  <p class="muted">Ideas that don't win stay here and can win a later round.</p>
+  {% if r.status == 'ideas' %}
+    {% if not me %}
+      <p><a href="/login?next={{ request.url.path }}">Sign in</a> to post an idea and vote.</p>
+    {% elif my_idea %}
+      <p class="muted">Your idea for this round: <strong>{{ my_idea.title }}</strong></p>
+    {% else %}
+      <form method="post" action="/rounds/{{ r.id }}/ideas" class="idea-form">
+        <label for="title">A game where…</label>
+        <input id="title" name="title" maxlength="140" required placeholder="you steal seconds from other players by touching them">
+        <label for="body">More details (optional)</label>
+        <textarea id="body" name="body" maxlength="1000" rows="2"></textarea>
+        <button>Post idea</button>
+      </form>
+    {% endif %}
+  {% endif %}
+  {% if board %}
+  <ul class="ideas">
+    {% for i in board %}
+    <li>
+      <div class="votes">{{ i.votes }}</div>
+      <div class="idea"><strong>{{ i.title }}</strong>{% if i.body %}<p>{{ i.body }}</p>{% endif %}<span class="muted">by @{{ i.login }}</span></div>
+      <div class="actions">
+        {% if r.status == 'ideas' and me and i.login != me and not i.voted %}<form method="post" action="/ideas/{{ i.id }}/vote"><button class="small">Vote</button></form>
+        {% elif i.voted %}<span class="pill">voted</span>{% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">No open ideas yet.</p>
+  {% endif %}
+</section>
+{% else %}
+<section><h1>Idea rounds</h1><p>No round has been opened yet.</p></section>
+{% endif %}
+
+{% if can_open %}
+<section class="open-round">
+  <h2>Open a new round</h2>
+  <form method="post" action="/rounds">
+    <label for="rtitle">Title</label>
+    <input id="rtitle" name="title" maxlength="100" required value="Idea round">
+    <label for="ih">Hours for ideas</label>
+    <input id="ih" name="idea_hours" type="number" min="0.1" step="0.1" value="72">
+    <label for="vh">Hours to play and vote on prototypes</label>
+    <input id="vh" name="vote_hours" type="number" min="0.1" step="0.1" value="48">
+    <button>Open round</button>
+  </form>
+</section>
+{% endif %}
+
+{% if past and past|length > 1 %}
+<section>
+  <h2>All rounds</h2>
+  <ul class="versions">
+    {% for x in past %}<li><a href="/rounds/{{ x.id }}">{{ x.title }}</a> <span class="muted">· {{ x.status }}{% if x.game %} · winner: {{ x.game }}{% endif %}</span></li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

@@ -9,7 +9,7 @@ How the game is built:
 
 Rules:
 - Keep every rule in `constitution.md` (given below). Never edit `game/platform.js`, `gates.mjs`, `constitution.md`, `package.json`, `index.html`'s security policy, or anything outside the game files. Edits to protected files are undone automatically.
-- Do exactly the task: one change, no unrelated refactors.
+- Do exactly the task: one change, no unrelated refactors. (In a PROTOTYPE ROUND the task is a tiny new game built over the template; replacing the template game is the task.)
 - You cannot run commands. After you finish, the gates run in a sandbox (syntax, rule tests, determinism replay, bot playtest, performance, content policy). If they fail, you get the failure output and another try.
 - Keep code small and readable. Students read it.
 - The changelog is shown to players next to the new version: one or two friendly sentences about what changed, in plain English, without code names.

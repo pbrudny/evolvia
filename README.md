@@ -17,7 +17,7 @@ A class project for Event Driven Programming at ATA. Every step is an event, so 
 | Phase | What | Status |
 |-------|------|--------|
 | 1 | Brainstorming with the class | done, 27 Nov 2026 |
-| 2 | MVP: game template ✓, platform ✓ (login, milestones, ideas, votes), AI build pipeline ✓, Multiverse ✓, XP and levels ✓ | in progress (idea and prototype rounds next) |
+| 2 | MVP: game template ✓, platform ✓ (login, milestones, ideas, votes), AI build pipeline ✓, Multiverse ✓, XP and levels ✓, idea and prototype rounds ✓ | done |
 | 3 | Students play, suggest, vote and build event consumers | later |
 
 ## Repos
@@ -59,6 +59,17 @@ XP follows DESIGN.md §10. It is awarded automatically: +5 for the first milesto
 Current XP loses 20% per month, lifetime XP never does. The level comes from current XP and sets ideas per day: Player 1 (after the first milestone); Contributor (20) 2; Builder (100) 3 and +3 votes on new ideas; Architect (300) 4; Curator (600) 4 and double votes.
 
 Pages: `/p/<login>` (level, XP history, live ideas), `/g/<slug>/tree` (the Multiverse). Admins: `/admin/xp.csv` (login, name, level, current, lifetime, live ideas, confirmed bugs). Names come from an optional `DATA_DIR/roster.json` (`{"github-login": "Student Name"}`).
+
+## Idea rounds and prototype rounds
+
+`/rounds` (DESIGN.md §4.1–4.2). An admin or an Architect opens a round with two lengths: hours for ideas, hours to play and vote.
+
+1. **Ideas.** Players post one game idea per round to the shared idea board and upvote others (+1 XP per vote to the author).
+2. **Prototypes.** When the idea phase ends, the top 3 ideas on the board are queued. The worker builds each from `evolvia-template` on a branch `prototype/<idea>-<login>` of [`pbrudny/evolvia-prototypes`](https://github.com/pbrudny/evolvia-prototypes) (same classifier → builder → gates → reviewer loop, with a prototype note). Each prototype is a hidden game `proto-<idea>`, playable at `/g/proto-<idea>`, without "What if…?".
+3. **Play and vote.** One vote per player per round, only for a prototype in which the player reached a milestone.
+4. **The winner becomes a game.** The most-voted prototype wins (+50 XP to its author). The worker creates the public repo `pbrudny/evolvia-<slug>` with the prototype commit as `main`, and the platform installs it as version 0. Ideas that didn't win go back to the board.
+
+Phases move on by time (checked on every round page and worker poll). Admins can end a phase early ("End this phase now") and retry a failed prototype. Keep `evolvia-prototypes` `main` in sync with the template when the template changes.
 
 ## The build pipeline
 

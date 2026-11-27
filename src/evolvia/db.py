@@ -76,6 +76,47 @@ CREATE TABLE IF NOT EXISTS xp (           -- append-only XP history (DESIGN.md ย
     at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS xp_login ON xp (login);
+CREATE TABLE IF NOT EXISTS rounds (       -- idea and prototype rounds (DESIGN.md ยง4.1-4.2), see rounds.py
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,             -- ideas | prototyping | voting | creating | publishing | closed
+    opened_by TEXT NOT NULL,
+    ideas_end TEXT NOT NULL,
+    vote_hours REAL NOT NULL,
+    vote_end TEXT,
+    winner INTEGER,                   -- ideas(id)
+    game TEXT,                        -- slug of the game made from the winner
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ideas (        -- the shared idea board: one-line game ideas
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    round INTEGER NOT NULL REFERENCES rounds(id),   -- the round it was posted in
+    login TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',  -- open | queued | building | built | failed | rejected | won
+    proto_round INTEGER,              -- the round it was prototyped in
+    proto_game TEXT,                  -- slug of its prototype (games.kind = 'prototype')
+    game_name TEXT,                   -- name the builder gave the game
+    build_note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS idea_votes (
+    idea INTEGER NOT NULL REFERENCES ideas(id),
+    login TEXT NOT NULL,
+    weight INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (idea, login)
+);
+CREATE TABLE IF NOT EXISTS proto_votes (   -- one vote per player per round, for a prototype they reached a milestone in
+    round INTEGER NOT NULL REFERENCES rounds(id),
+    login TEXT NOT NULL,
+    idea INTEGER NOT NULL REFERENCES ideas(id),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (round, login)
+);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     type TEXT NOT NULL,
@@ -106,6 +147,8 @@ MIGRATIONS = [
     ("suggestions", "updated_at", "TEXT"),
     ("suggestions", "bonus_votes", "INTEGER NOT NULL DEFAULT 0"),  # Builder level and up: +3
     ("votes", "weight", "INTEGER NOT NULL DEFAULT 1"),              # Curator: 2
+    ("games", "kind", "TEXT NOT NULL DEFAULT 'game'"),             # game | prototype
+    ("games", "round", "INTEGER"),                                  # prototypes: their round
 ]
 
 

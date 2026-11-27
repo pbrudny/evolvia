@@ -25,7 +25,7 @@ from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import db, xp
+from . import db, rounds, xp
 from .versions import install, version_dir
 
 CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
@@ -183,9 +183,11 @@ def home(request: Request):
         games = conn.execute(
             "SELECT g.*, (SELECT COUNT(*) FROM versions v WHERE v.game = g.slug) AS versions, "
             "(SELECT COUNT(*) FROM suggestions s WHERE s.game = g.slug AND s.status = 'open') AS open_suggestions "
-            "FROM games g ORDER BY g.created_at"
+            "FROM games g WHERE g.kind = 'game' ORDER BY g.created_at"
         ).fetchall()
-    return page(request, "home.html", games=games)
+        rounds.advance(conn)
+        current = rounds.active(conn)
+    return page(request, "home.html", games=games, current=current)
 
 
 @app.get("/g/{slug}")
@@ -221,10 +223,14 @@ def game_version(request: Request, slug: str, vid: str):
         versions = conn.execute("SELECT * FROM versions WHERE game = ? ORDER BY created_at DESC", (slug,)).fetchall()
         can = eligible(conn, login, vid)
         left = suggestions_left(conn, login) if login else 0
+        proto = None
+        if game["kind"] == "prototype":
+            proto = conn.execute("SELECT r.*, i.title AS idea_title, i.login AS idea_login FROM rounds r "
+                                 "JOIN ideas i ON i.proto_game = ? WHERE r.id = ?", (slug, game["round"])).fetchone()
         per_day = xp.totals(conn, login)["per_day"] if login else 0
     return page(
         request, "game.html", game=game, v=v, milestones=json.loads(v["milestones"]), mine=mine,
-        suggestions=suggestions, builds=builds, versions=versions, eligible=can, left=left, per_day=per_day,
+        suggestions=suggestions, builds=builds, versions=versions, eligible=can, left=left, per_day=per_day, proto=proto,
         auto_votes=AUTO_BUILD_MIN_VOTES, play_origin=PLAY_URL,
         frame_src=f"{PLAY_URL}/v/{vid}/index.html?t={TICKETS.dumps(vid)}" if login else None,
     )
@@ -384,6 +390,8 @@ def suggest(request: Request, slug: str, vid: str, title: str = Form(...), body:
         v = version_row(conn, vid)
         if v["game"] != slug:
             raise HTTPException(404)
+        if conn.execute("SELECT kind FROM games WHERE slug = ?", (slug,)).fetchone()["kind"] != "game":
+            raise HTTPException(400, "Prototypes don't take suggestions. Vote for one in its round.")
         if not eligible(conn, login, vid):
             raise HTTPException(403, "Reach a milestone in this version first")
         if not is_admin(login) and suggestions_left(conn, login) <= 0:
@@ -496,6 +504,10 @@ def worker_next(request: Request):
     need_worker(request)
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        rounds.advance(conn)
+        job = round_job(conn)
+        if job:
+            return {"job": job}
         s = conn.execute("SELECT * FROM suggestions WHERE status = 'accepted' ORDER BY updated_at, id LIMIT 1").fetchone()
         if not s:
             s = auto_pick(conn)
@@ -505,7 +517,8 @@ def worker_next(request: Request):
         v = version_row(conn, s["base_version"])
         set_status(conn, s["id"], "building", "The AI builder is working on it")
         db.emit(conn, "BuildStarted", "worker", game=s["game"], suggestion=s["id"], base_version=v["id"])
-    return {"job": {"suggestion": s["id"], "game": g["slug"], "game_name": g["name"], "repo": g["repo"],
+    return {"job": {"kind": "suggestion", "progress": f"/api/worker/{s['id']}/progress", "result": f"/api/worker/{s['id']}/result",
+                    "suggestion": s["id"], "game": g["slug"], "game_name": g["name"], "repo": g["repo"],
                     "base_version": v["id"], "base_sha": v["sha"], "title": s["title"], "body": s["body"], "author": s["login"]}}
 
 
@@ -568,6 +581,252 @@ async def worker_result(request: Request, sid: int):
         set_status(conn, sid, "live", changelog, result_version=vid)
         db.emit(conn, "BuildSucceeded", "worker", game=s["game"], suggestion=sid, version=vid, author=s["login"])
         xp.award(conn, s["login"], xp.LIVE, "live", game=s["game"], version=vid)
+    return {"ok": True, "version": vid}
+
+
+# ---------- idea rounds and prototype rounds (DESIGN.md §4.1-4.2) ----------
+
+def round_row(conn, rid: int):
+    r = conn.execute("SELECT * FROM rounds WHERE id = ?", (rid,)).fetchone()
+    if not r:
+        raise HTTPException(404, "No such round")
+    return r
+
+
+@app.get("/rounds")
+def rounds_index(request: Request):
+    with db.connect() as conn:
+        rounds.advance(conn)
+        r = rounds.active(conn)
+        if r:
+            return RedirectResponse(f"/rounds/{r['id']}", status_code=302)
+        last = conn.execute("SELECT id FROM rounds ORDER BY id DESC LIMIT 1").fetchone()
+    if last:
+        return RedirectResponse(f"/rounds/{last['id']}", status_code=302)
+    return page(request, "round.html", r=None, past=[], board=[], protos=[], can_open=can_open_round(request),
+                my_idea=None, my_vote=None, winner_game=None)
+
+
+def can_open_round(request: Request) -> bool:
+    with db.connect() as conn:
+        return rounds.can_open(conn, me(request), is_admin(me(request))) and not rounds.active(conn)
+
+
+@app.get("/rounds/{rid}", response_class=HTMLResponse)
+def round_page(request: Request, rid: int):
+    login = me(request)
+    with db.connect() as conn:
+        rounds.advance(conn)
+        r = round_row(conn, rid)
+        past = conn.execute("SELECT * FROM rounds ORDER BY id DESC LIMIT 20").fetchall()
+        my_idea = conn.execute("SELECT * FROM ideas WHERE round = ? AND login = ?", (rid, login)).fetchone() if login else None
+        my_vote = conn.execute("SELECT idea FROM proto_votes WHERE round = ? AND login = ?", (rid, login)).fetchone() if login else None
+        board = rounds.board(conn, login)
+        protos = rounds.prototypes(conn, rid, login)
+        winner_game = conn.execute("SELECT * FROM games WHERE slug = ? AND kind = 'game'", (r["game"],)).fetchone() if r["game"] else None
+        can_open = rounds.can_open(conn, login, is_admin(login)) and not rounds.active(conn)
+    return page(request, "round.html", r=r, past=past, board=board, protos=protos, my_idea=my_idea,
+                my_vote=my_vote["idea"] if my_vote else None, winner_game=winner_game, can_open=can_open)
+
+
+@app.post("/rounds")
+def round_open(request: Request, title: str = Form(...), idea_hours: float = Form(72), vote_hours: float = Form(48)):
+    login = need_login(request)
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if not rounds.can_open(conn, login, is_admin(login)):
+            raise HTTPException(403, "Only the instructor and Architects can open a round")
+        if rounds.active(conn):
+            raise HTTPException(400, "A round is already running")
+        title = title.strip()[:100] or "Idea round"
+        rid = rounds.open_round(conn, login, title, min(max(idea_hours, 0.05), 24 * 14), min(max(vote_hours, 0.05), 24 * 14))
+    return RedirectResponse(f"/rounds/{rid}", status_code=303)
+
+
+@app.post("/rounds/{rid}/ideas")
+def idea_post(request: Request, rid: int, title: str = Form(...), body: str = Form("")):
+    login = need_login(request)
+    title, body = title.strip()[:140], body.strip()[:1000]
+    if len(title) < 5:
+        raise HTTPException(400, "Describe your game in at least a few words")
+    with db.connect() as conn:
+        rounds.advance(conn)
+        if round_row(conn, rid)["status"] != "ideas":
+            raise HTTPException(400, "This round no longer takes ideas")
+        if conn.execute("SELECT 1 FROM ideas WHERE round = ? AND login = ?", (rid, login)).fetchone():
+            raise HTTPException(429, "One idea per player per round")
+        iid = conn.execute("INSERT INTO ideas (round, login, title, body, created_at) VALUES (?, ?, ?, ?, ?)",
+                           (rid, login, title, body, db.now())).lastrowid
+        db.emit(conn, "IdeaSubmitted", login, round=rid, idea=iid, text=title)
+    return RedirectResponse(f"/rounds/{rid}#board", status_code=303)
+
+
+@app.post("/ideas/{iid}/vote")
+def idea_vote(request: Request, iid: int):
+    login = need_login(request)
+    with db.connect() as conn:
+        rounds.advance(conn)
+        i = conn.execute("SELECT * FROM ideas WHERE id = ?", (iid,)).fetchone()
+        r = rounds.active(conn)
+        if not i or i["status"] != "open" or not r or r["status"] != "ideas":
+            raise HTTPException(400, "Ideas can be voted on while a round takes ideas")
+        if i["login"] == login:
+            raise HTTPException(400, "You can't vote for your own idea")
+        weight = xp.totals(conn, login)["vote_weight"]
+        if conn.execute("INSERT OR IGNORE INTO idea_votes (idea, login, weight, created_at) VALUES (?, ?, ?, ?)",
+                        (iid, login, weight, db.now())).rowcount:
+            db.emit(conn, "IdeaVoted", login, round=r["id"], idea=iid, weight=weight)
+            xp.award(conn, i["login"], xp.VOTE, "vote")
+    return RedirectResponse(f"/rounds/{r['id']}#board", status_code=303)
+
+
+@app.post("/rounds/{rid}/vote")
+def prototype_vote(request: Request, rid: int, idea: int = Form(...)):
+    login = need_login(request)
+    with db.connect() as conn:
+        rounds.advance(conn)
+        if round_row(conn, rid)["status"] != "voting":
+            raise HTTPException(400, "This round is not voting")
+        p = next((x for x in rounds.prototypes(conn, rid, login) if x["id"] == idea and x["status"] == "built"), None)
+        if not p:
+            raise HTTPException(404, "No such prototype in this round")
+        if not p["reached"]:
+            raise HTTPException(403, "Reach a milestone in this prototype first")
+        if conn.execute("INSERT OR IGNORE INTO proto_votes (round, login, idea, created_at) VALUES (?, ?, ?, ?)",
+                        (rid, login, idea, db.now())).rowcount:
+            db.emit(conn, "PrototypeVoted", login, round=rid, idea=idea)
+    return RedirectResponse(f"/rounds/{rid}#prototypes", status_code=303)
+
+
+@app.post("/rounds/{rid}/next")
+def round_next(request: Request, rid: int):
+    """Admin: end the current phase now (ideas or voting)."""
+    if not is_admin(me(request)):
+        raise HTTPException(403)
+    with db.connect() as conn:
+        rounds.force_next(conn, round_row(conn, rid))
+        rounds.advance(conn)
+    return RedirectResponse(f"/rounds/{rid}", status_code=303)
+
+
+@app.post("/ideas/{iid}/retry")
+def idea_retry(request: Request, iid: int):
+    """Admin: build a failed prototype again while its round is still prototyping."""
+    if not is_admin(me(request)):
+        raise HTTPException(403)
+    with db.connect() as conn:
+        i = conn.execute("SELECT * FROM ideas WHERE id = ?", (iid,)).fetchone()
+        if not i or i["status"] != "failed" or round_row(conn, i["proto_round"])["status"] not in ("prototyping", "voting"):
+            raise HTTPException(400, "Only failed prototypes of a running round can be retried")
+        conn.execute("UPDATE ideas SET status = 'queued', build_note = 'Waiting for the builder', updated_at = ? WHERE id = ?",
+                     (db.now(), iid))
+        conn.execute("UPDATE rounds SET status = 'prototyping' WHERE id = ? AND status = 'voting'", (i["proto_round"],))
+    return RedirectResponse(f"/rounds/{i['proto_round']}#prototypes", status_code=303)
+
+
+def round_job(conn) -> dict | None:
+    """Worker jobs from rounds: create the winner's repo first, then build queued prototypes."""
+    r = conn.execute("SELECT * FROM rounds WHERE status = 'creating' ORDER BY id LIMIT 1").fetchone()
+    if r:
+        w = conn.execute("SELECT i.*, g.main_version FROM ideas i JOIN games g ON g.slug = i.proto_game WHERE i.id = ?",
+                         (r["winner"],)).fetchone()
+        v = version_row(conn, w["main_version"])
+        conn.execute("UPDATE rounds SET status = 'publishing', note = 'The worker is creating the game repository' "
+                     "WHERE id = ?", (r["id"],))
+        return {"kind": "create_game", "round": r["id"], "slug": r["game"], "name": w["game_name"] or w["title"],
+                "description": f"Evolvia game: {w['title']} (idea by @{w['login']})", "author": w["login"],
+                "owner": rounds.GAMES_OWNER, "source_repo": rounds.PROTOTYPES_REPO, "sha": v["sha"],
+                "result": f"/api/worker/rounds/{r['id']}/game"}
+    i = conn.execute("SELECT * FROM ideas WHERE status = 'queued' ORDER BY updated_at, id LIMIT 1").fetchone()
+    if not i:
+        return None
+    conn.execute("UPDATE ideas SET status = 'building', build_note = 'The AI builder is working on it', updated_at = ? "
+                 "WHERE id = ?", (db.now(), i["id"]))
+    db.emit(conn, "BuildStarted", "worker", round=i["proto_round"], idea=i["id"], prototype=True)
+    return {"kind": "prototype", "idea": i["id"], "round": i["proto_round"], "repo": rounds.PROTOTYPES_REPO,
+            "base_ref": "main", "title": i["title"], "body": i["body"], "author": i["login"],
+            "progress": f"/api/worker/ideas/{i['id']}/progress", "result": f"/api/worker/ideas/{i['id']}/result"}
+
+
+@app.post("/api/worker/ideas/{iid}/progress")
+async def prototype_progress(request: Request, iid: int):
+    need_worker(request)
+    body = await request.json()
+    message = str(body.get("message", ""))[:200]
+    with db.connect() as conn:
+        if conn.execute("UPDATE ideas SET build_note = ?, updated_at = ? WHERE id = ? AND status = 'building'",
+                        (message, db.now(), iid)).rowcount == 0:
+            raise HTTPException(400, "This prototype is not being built")
+    return {"ok": True}
+
+
+@app.post("/api/worker/ideas/{iid}/result")
+async def prototype_result(request: Request, iid: int):
+    """status: done (sha, changelog, name) | rejected | failed (reason)."""
+    need_worker(request)
+    body = await request.json()
+    status, note = body.get("status"), str(body.get("reason", ""))[:500]
+    with db.connect() as conn:
+        i = conn.execute("SELECT * FROM ideas WHERE id = ?", (iid,)).fetchone()
+        if not i or i["status"] != "building":
+            raise HTTPException(400, "This prototype is not being built")
+        if status in ("rejected", "failed"):
+            conn.execute("UPDATE ideas SET status = ?, build_note = ?, updated_at = ? WHERE id = ?", (status, note, db.now(), iid))
+            db.emit(conn, "BuildFailed", "worker", round=i["proto_round"], idea=iid, reason=note, rejected=status == "rejected")
+            rounds.advance(conn)
+            return {"ok": True}
+        if status != "done":
+            raise HTTPException(400, "status must be done, rejected or failed")
+        name = (str(body.get("name", "")).strip() or i["title"])[:60]
+        slug = f"proto-{iid}"
+        conn.execute("INSERT OR REPLACE INTO games (slug, name, repo, kind, round, created_at) VALUES (?, ?, ?, 'prototype', ?, ?)",
+                     (slug, name, rounds.PROTOTYPES_REPO, i["proto_round"], db.now()))
+    try:
+        vid = install(slug, rounds.PROTOTYPES_REPO, str(body.get("sha", "")), changelog=str(body.get("changelog", ""))[:1000],
+                      credited_login=i["login"], actor="worker")
+    except Exception as e:  # noqa: BLE001
+        with db.connect() as conn:
+            conn.execute("UPDATE ideas SET status = 'failed', build_note = ?, updated_at = ? WHERE id = ?",
+                         (f"Install failed: {e}"[:500], db.now(), iid))
+            rounds.advance(conn)
+        raise HTTPException(502, f"install failed: {e}")
+    with db.connect() as conn:
+        conn.execute("UPDATE games SET main_version = ? WHERE slug = ?", (vid, slug))
+        conn.execute("UPDATE ideas SET status = 'built', proto_game = ?, game_name = ?, build_note = ?, updated_at = ? WHERE id = ?",
+                     (slug, name, str(body.get("changelog", ""))[:500], db.now(), iid))
+        db.emit(conn, "PrototypeBuilt", "worker", round=i["proto_round"], idea=iid, version=vid, url=f"/g/{slug}/v/{vid}")
+        rounds.advance(conn)
+    return {"ok": True, "version": vid}
+
+
+@app.post("/api/worker/rounds/{rid}/game")
+async def round_game_result(request: Request, rid: int):
+    """The worker created the winner's repo: {"status": "done", "repo", "sha"} or {"status": "failed", "reason"}."""
+    need_worker(request)
+    body = await request.json()
+    with db.connect() as conn:
+        r = round_row(conn, rid)
+        if r["status"] != "publishing":
+            raise HTTPException(400, "This round is not creating a game")
+        w = conn.execute("SELECT * FROM ideas WHERE id = ?", (r["winner"],)).fetchone()
+        if body.get("status") != "done":
+            conn.execute("UPDATE rounds SET status = 'creating', note = ? WHERE id = ?",
+                         (f"Creating the repository failed, will retry: {body.get('reason', '')}"[:300], rid))
+            return {"ok": True}
+        repo = str(body.get("repo", ""))
+        conn.execute("INSERT OR IGNORE INTO games (slug, name, repo, kind, round, created_at) VALUES (?, ?, ?, 'game', ?, ?)",
+                     (r["game"], w["game_name"] or w["title"], repo, rid, db.now()))
+    try:
+        vid = install(r["game"], repo, str(body.get("sha", "")), changelog="Version 0: the winning prototype",
+                      credited_login=w["login"], actor="worker")
+    except Exception as e:  # noqa: BLE001
+        with db.connect() as conn:
+            conn.execute("UPDATE rounds SET status = 'creating', note = ? WHERE id = ?", (f"Install failed: {e}"[:300], rid))
+        raise HTTPException(502, f"install failed: {e}")
+    with db.connect() as conn:
+        conn.execute("UPDATE games SET main_version = ? WHERE slug = ?", (vid, r["game"]))
+        conn.execute("UPDATE rounds SET status = 'closed', note = '' WHERE id = ?", (rid,))
+        db.emit(conn, "GameCreated", "worker", game=r["game"], repo=repo, version=vid, round=rid, idea=w["id"], author=w["login"])
     return {"ok": True, "version": vid}
 
 

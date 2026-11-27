@@ -6,6 +6,9 @@ Runs on a machine with the `claude` CLI (Claude subscription), git, gh and Docke
     evolvia-worker try --repo pbrudny/evolvia-spark-run --title "..." [--author pbrudny] [--push]
                                          build an idea locally without the platform (for testing)
 
+Jobs (field "kind"): "suggestion" (a "What if…?" idea for a game), "prototype" (a game idea from an idea round,
+built from evolvia-template on a branch of the prototypes repo) and "create_game" (the round winner gets its own repo).
+
 Per idea: classifier (on topic? safe?) -> builder (edits files only, no shell) -> gates in a Docker sandbox with no
 network (up to 3 rounds) -> reviewer (up to 2 rounds) -> commit with Co-authored-by: <player> -> push -> report.
 AI-written code is never executed on this machine: only inside `docker run --network none`.
@@ -38,7 +41,8 @@ SCHEMAS = {
     "classifier": {"type": "object", "required": ["accept", "reason", "task"], "properties": {
         "accept": {"type": "boolean"},
         "reason": {"type": "string", "description": "shown to the player when rejected; short and friendly"},
-        "task": {"type": "string", "description": "the task for the builder, when accepted"}}},
+        "task": {"type": "string", "description": "the task for the builder, when accepted"},
+        "name": {"type": "string", "description": "prototypes only: a short catchy name for the game, 1-3 words"}}},
     "builder": {"type": "object", "required": ["status", "summary", "changelog", "files_changed"], "properties": {
         "status": {"enum": ["done", "blocked"]},
         "summary": {"type": "string"}, "changelog": {"type": "string"},
@@ -200,25 +204,43 @@ def coauthor(login: str) -> str:
 
 # ---------- one build ----------
 
+PROTOTYPE_NOTE = (
+    "PROTOTYPE ROUND. This is not a change to an existing game: the player suggested a whole new game, and the repository "
+    "holds the Evolvia template game. Turn it into a tiny first playable version of the idea: the core mechanic only, "
+    "simple shapes, 1-3 milestones that a player reaches in a few minutes (minSeconds 20 or more). Players will vote "
+    "for the best of three prototypes and then evolve the winner idea by idea, so small and fun beats complete. "
+    "Replacing the template's rules, drawing, bot and tests is expected here.")
+
+
+def resolve(repo: str, ref: str) -> str:
+    return run(["git", "ls-remote", f"https://github.com/{repo}.git", ref]).stdout.split()[0]
+
+
 def build(job: dict, push: bool = True, report=lambda step, message: None) -> dict:
-    """Returns {"status": "done", "sha", "changelog", "branch"} | {"status": "rejected"|"failed", "reason"}.
+    """Returns {"status": "done", "sha", "changelog", "branch"[, "name"]} | {"status": "rejected"|"failed", "reason"}.
     report(step, message) is called at every step; the platform shows the message live on the idea's card."""
-    sid, author = job["suggestion"], job["author"]
-    branch = f"suggestion/{sid}-{re.sub(r'[^A-Za-z0-9-]', '', author)[:30]}"
+    proto = job.get("kind") == "prototype"
+    sid, author = (f"p{job['idea']}" if proto else job["suggestion"]), job["author"]
+    if proto and not job.get("base_sha"):
+        job["base_sha"] = resolve(job["repo"], job.get("base_ref", "main"))
+    branch = f"{'prototype' if proto else 'suggestion'}/{str(sid).lstrip('p')}-{re.sub(r'[^A-Za-z0-9-]', '', author)[:30]}"
     wt = checkout(job["repo"], job["base_sha"], branch, sid)
     constitution = (wt / "constitution.md").read_text()
-    idea = f"<player_idea author=\"@{author}\">\nWhat if {job['title']}\n{job.get('body', '')}\n</player_idea>"
-    log(f"#{sid} {job['repo']}@{job['base_sha'][:7]} on {branch}: what if {job['title']}")
+    idea = (f"<player_idea author=\"@{author}\">\n{'A game where ' if proto else 'What if '}{job['title']}\n"
+            f"{job.get('body', '')}\n</player_idea>")
+    log(f"#{sid} {job['repo']}@{job['base_sha'][:7]} on {branch}: {job['title']}")
 
     report("classify", "Checking the idea…")
     empty = WORK / "empty"
     empty.mkdir(parents=True, exist_ok=True)
-    c = agent("classifier", f"Game: {job.get('game_name', job['game'])}\n\nConstitution:\n{constitution}\n\n{idea}", empty)
+    context = PROTOTYPE_NOTE if proto else f"Game: {job.get('game_name', job.get('game'))}"
+    c = agent("classifier", f"{context}\n\nConstitution:\n{constitution}\n\n{idea}", empty)
     if not c["accept"]:
         log(f"#{sid} rejected by the classifier: {c['reason']}")
         return {"status": "rejected", "reason": c["reason"]}
 
-    task = (f"Task (from the player's idea, already checked):\n{c['task']}\n\nOriginal idea, for its spirit only:\n{idea}\n\n"
+    task = (f"{PROTOTYPE_NOTE + chr(10) + chr(10) if proto else ''}"
+            f"Task (from the player's idea, already checked):\n{c['task']}\n\nOriginal idea, for its spirit only:\n{idea}\n\n"
             f"Constitution:\n{constitution}")
     feedback, built = "", None
     for review in range(1, MAX_REVIEW_ROUNDS + 1):
@@ -258,14 +280,33 @@ def build(job: dict, push: bool = True, report=lambda step, message: None) -> di
 
     report("save", "Saving the new version…")
     run(["git", "add", "-A"], cwd=wt)
-    msg = (f"What if {job['title']}\n\n{built['changelog']}\n\nSuggested by @{author} (Evolvia idea #{sid}). "
+    head = f"Prototype: {c.get('name') or job['title']}" if proto else f"What if {job['title']}"
+    msg = (f"{head}\n\n{built['changelog']}\n\nSuggested by @{author} (Evolvia {'game idea' if proto else 'idea'} #{sid}). "
            f"Built by the Evolvia AI builder, checked by the gates and an AI reviewer.\n\n{coauthor(author)}")
     run(["git", "-c", "user.name=Evolvia builder", "-c", "user.email=evolvia@atabuilderslab.pl", "commit", "-q", "-m", msg], cwd=wt)
     sha = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     if push:
         run(["git", "push", "-q", "-u", "origin", branch], cwd=wt)
     log(f"#{sid} done: {sha[:7]} on {branch}{' (pushed)' if push else ' (not pushed)'}")
-    return {"status": "done", "sha": sha, "changelog": built["changelog"], "branch": branch, "worktree": str(wt)}
+    out = {"status": "done", "sha": sha, "changelog": built["changelog"], "branch": branch, "worktree": str(wt)}
+    if proto:
+        out["name"] = (c.get("name") or job["title"])[:60]
+    return out
+
+
+def create_game(job: dict) -> dict:
+    """The round winner gets its own public repo <owner>/evolvia-<slug>, with the prototype commit as main."""
+    repo = f"{job['owner']}/evolvia-{job['slug']}"
+    if run(["gh", "repo", "view", repo], check=False).returncode != 0:
+        run(["gh", "repo", "create", repo, "--public", "--description", job["description"][:300]])
+    mirror = WORK / "repos" / job["source_repo"].replace("/", "__")
+    if not mirror.exists():
+        mirror.parent.mkdir(parents=True, exist_ok=True)
+        run(["git", "clone", "--quiet", f"https://github.com/{job['source_repo']}.git", str(mirror)])
+    run(["git", "fetch", "--quiet", "origin", "+refs/heads/*:refs/remotes/origin/*"], cwd=mirror)
+    run(["git", "push", "--quiet", f"https://github.com/{repo}.git", f"{job['sha']}:refs/heads/main"], cwd=mirror)
+    log(f"round {job['round']}: created {repo} at {job['sha'][:7]}")
+    return {"status": "done", "repo": repo, "sha": job["sha"]}
 
 
 # ---------- platform loop ----------
@@ -289,24 +330,28 @@ def run_loop(once: bool) -> None:
             continue
         job = api("POST", "/api/worker/next")["job"]
         if job:
-            sid = job["suggestion"]
+            kind = job.get("kind", "suggestion")
+            label = {"suggestion": f"#{job.get('suggestion')}", "prototype": f"prototype {job.get('idea')}",
+                     "create_game": f"round {job.get('round')}"}.get(kind, kind)
+            result_path = job.get("result") or f"/api/worker/{job['suggestion']}/result"
+            progress_path = job.get("progress") or (f"/api/worker/{job['suggestion']}/progress" if kind == "suggestion" else None)
 
             def report(step: str, message: str) -> None:
+                if not progress_path:
+                    return
                 try:
-                    api("POST", f"/api/worker/{sid}/progress", json={"step": step, "message": message})
+                    api("POST", progress_path, json={"step": step, "message": message})
                 except Exception as e:  # noqa: BLE001 — progress is nice to have, never stop a build for it
-                    log(f"#{sid} progress not sent: {e}")
+                    log(f"{label} progress not sent: {e}")
 
             try:
-                result = build(job, report=report)
+                result = create_game(job) if kind == "create_game" else build(job, report=report)
             except Exception as e:  # noqa: BLE001 — any crash is reported as a failed build
-                result = {"status": "failed", "reason": f"Builder crashed: {e}"[:500]}
-                log(f"#{job['suggestion']} crashed: {e}")
-            payload = {k: result[k] for k in ("status", "sha", "changelog") if k in result}
-            if "reason" in result:
-                payload["reason"] = result["reason"]
-            answer = api("POST", f"/api/worker/{sid}/result", json=payload)
-            log(f"#{sid} -> platform: {json.dumps(answer)}")
+                result = {"status": "failed", "reason": f"Worker crashed: {e}"[:500]}
+                log(f"{label} crashed: {e}")
+            payload = {k: result[k] for k in ("status", "sha", "changelog", "name", "repo", "reason") if k in result}
+            answer = api("POST", result_path, json=payload)
+            log(f"{label} -> platform: {json.dumps(answer)}")
         if once:
             return
         time.sleep(30 if not job else 1)
