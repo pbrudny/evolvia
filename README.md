@@ -17,7 +17,7 @@ A class project for Event Driven Programming at ATA. Every step is an event, so 
 | Phase | What | Status |
 |-------|------|--------|
 | 1 | Brainstorming with the class | done, 27 Nov 2026 |
-| 2 | MVP: game template ✓, platform ✓ (login, milestones, ideas, votes), build pipeline | in progress |
+| 2 | MVP: game template ✓, platform ✓ (login, milestones, ideas, votes), AI build pipeline ✓ | in progress (version tree view, XP next) |
 | 3 | Students play, suggest, vote and build event consumers | later |
 
 ## Repos
@@ -51,7 +51,24 @@ evolvia-admin set-main --game spark-run --version spark-run-abc1234
 evolvia-admin list
 ```
 
-Settings: `BASE_URL`, `PLAY_URL`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `SESSION_SECRET`, `ADMIN_LOGINS`, `SUGGESTIONS_PER_DAY` (default 1), `DATA_DIR` (default `/data`).
+## The build pipeline
+
+An admin clicks **Build this** on an idea (or `evolvia-admin accept --suggestion N`). The build worker, running on a machine with the `claude` CLI, git, gh and Docker, picks it up:
+
+```bash
+EVOLVIA_WORKER_TOKEN=... uv run evolvia-worker run [--once]      # build accepted ideas from the platform
+uv run evolvia-worker try --repo pbrudny/evolvia-spark-run --title "..."  # build an idea locally, no platform, no push
+```
+
+1. **Classifier** (no tools): is the idea about this game, safe, and within the constitution? A rejection reason is shown to the player.
+2. **Builder** (may only read and edit files, no shell) changes the game on branch `suggestion/<id>-<login>`. Edits to protected files (`game/platform.js`, `gates.mjs`, `constitution.md`, ...) are undone.
+3. **Gates** run in `docker run --network none` (limited CPU, memory, time): AI-written code never runs on the worker machine itself. Up to 3 rounds with the failure output fed back.
+4. **Reviewer** (read-only) checks the diff against the idea and the constitution. Up to 2 rounds.
+5. The commit credits the player (`Co-authored-by`), the branch is pushed, and the platform installs it as a new version with the changelog. An admin makes it the main version.
+
+Agents run as `claude -p` with `--setting-sources ""`, `--strict-mcp-config` and an explicit tool list, so no user settings, hooks, MCP servers or CLAUDE.md reach them. A typical build takes 2–3 minutes and about $0.50.
+
+Settings: `BASE_URL`, `PLAY_URL`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `SESSION_SECRET`, `ADMIN_LOGINS`, `SUGGESTIONS_PER_DAY` (default 1), `WORKER_TOKEN`, `DATA_DIR` (default `/data`).
 
 ## Credits
 
