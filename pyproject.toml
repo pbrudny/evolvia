@@ -1,0 +1,33 @@
+[project]
+name = "evolvia"
+version = "0.1.0"
+description = "Evolvia platform: a game its players build. GitHub login, sandboxed game versions, milestones, suggestions and votes."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "jinja2>=3.1.0",
+    "httpx>=0.28.0",
+    "itsdangerous>=2.2.0",
+    "python-multipart>=0.0.20",
+]
+
+[project.scripts]
+evolvia-admin = "evolvia.admin:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/evolvia"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

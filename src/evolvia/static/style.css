@@ -1,0 +1,58 @@
+:root {
+  --bg: #0d1320; --panel: #151d2e; --line: #26324a; --fg: #e6edf3; --muted: #93a1b8;
+  --accent: #06d6a0; --accent-ink: #052e22; --warm: #ffd166;
+  --display: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+  --body: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 var(--body); }
+a { color: var(--accent); }
+code { font: 0.85em ui-monospace, "SF Mono", Menlo, monospace; color: var(--warm); }
+main { max-width: 72rem; margin: 0 auto; padding: 1.5rem max(16px, env(safe-area-inset-left)) 3rem; display: grid; gap: 2.5rem; }
+h1, h2, h3 { font-family: var(--display); line-height: 1.2; margin: 0 0 0.6rem; }
+h1 { font-size: clamp(1.8rem, 4vw, 2.6rem); }
+h2 { font-size: 1.25rem; }
+p { margin: 0 0 0.6rem; }
+.muted { color: var(--muted); }
+
+.top { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 0.8rem max(16px, env(safe-area-inset-left)); border-bottom: 1px solid var(--line); }
+.brand { font: 700 1.3rem var(--display); color: var(--fg); text-decoration: none; }
+.brand span { font: 400 0.8rem var(--body); color: var(--muted); margin-left: 0.4rem; }
+.top nav { display: flex; align-items: center; gap: 0.8rem; }
+.top form { margin: 0; }
+.who { color: var(--muted); }
+
+button, .button { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px; padding: 0.55rem 1rem; font: 600 0.95rem var(--body); cursor: pointer; text-decoration: none; display: inline-block; }
+button.small { padding: 0.35rem 0.8rem; font-size: 0.85rem; }
+button.link { background: none; color: var(--accent); padding: 0; font-weight: 400; }
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--warm); outline-offset: 2px; }
+
+.hero { padding: 1.5rem 0 0.5rem; max-width: 46rem; }
+.hero p { font-size: 1.1rem; color: #c9d4e3; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 1rem; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 1.1rem; color: var(--fg); text-decoration: none; display: grid; gap: 0.3rem; }
+.card:hover { border-color: var(--accent); }
+.card p { color: var(--muted); margin: 0; }
+.play { color: var(--accent); font-weight: 600; }
+.steps ol { margin: 0; padding-left: 1.2rem; display: grid; gap: 0.4rem; max-width: 46rem; }
+
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 20rem; gap: 1.5rem; align-items: start; }
+@media (max-width: 860px) { .layout { grid-template-columns: 1fr; } }
+.stage iframe { width: 100%; aspect-ratio: 16 / 9; border: 1px solid var(--line); border-radius: 12px; background: #0b111c; display: block; }
+.stage p { margin-top: 0.6rem; }
+.changelog { background: var(--panel); border-left: 3px solid var(--warm); padding: 0.6rem 0.8rem; border-radius: 6px; }
+aside { display: grid; gap: 1.2rem; }
+aside section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 1rem; }
+.milestones { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.3rem; color: var(--muted); }
+.milestones .done { color: var(--accent); font-weight: 600; }
+form label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0.5rem 0 0.2rem; }
+input, textarea { width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 0.5rem; font: inherit; }
+form button { margin-top: 0.7rem; }
+
+.ideas, .versions { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; }
+.ideas li { display: grid; grid-template-columns: 3rem minmax(0, 1fr) auto; gap: 0.8rem; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 0.7rem 0.9rem; }
+.ideas p { margin: 0.2rem 0; color: #c9d4e3; }
+.votes { font: 700 1.4rem var(--display); color: var(--warm); text-align: center; font-variant-numeric: tabular-nums; }
+.versions li { border-left: 2px solid var(--line); padding-left: 0.8rem; }
+.pill { display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 999px; background: rgba(6, 214, 160, 0.15); color: var(--accent); }
+footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 1.5rem 1rem 2rem; border-top: 1px solid var(--line); }

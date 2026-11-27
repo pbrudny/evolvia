@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}{{ game.name }} · Evolvia{% endblock %}
+{% block main %}
+<div class="game-head">
+  <h1>{{ game.name }}</h1>
+  <p class="muted">
+    Version <code>{{ v.id }}</code>{% if v.id == game.main_version %} · <span class="pill">main</span>{% else %} · <a href="/g/{{ game.slug }}">go to the main version</a>{% endif %}
+    {% if v.credited_login %} · idea by <a href="https://github.com/{{ v.credited_login }}">@{{ v.credited_login }}</a>{% endif %}
+  </p>
+</div>
+
+<div class="layout">
+  <div class="stage">
+    <iframe id="game" src="{{ frame_src }}" sandbox="allow-scripts" title="{{ game.name }}"
+            data-version="{{ v.id }}" data-play-origin="{{ play_origin }}" data-signed-in="{{ 'yes' if me else 'no' }}"></iframe>
+    <p id="status" class="muted" role="status">{% if not me %}You can play right away. <a href="/login?next={{ request.url.path }}">Sign in</a> to record milestones and suggest changes.{% else %}Click the game, then use the arrow keys.{% endif %}</p>
+    {% if v.changelog %}<p class="changelog"><strong>What changed:</strong> {{ v.changelog }}</p>{% endif %}
+  </div>
+
+  <aside>
+    <section>
+      <h2>Milestones</h2>
+      <ul class="milestones">
+        {% for m in milestones %}
+        <li data-milestone="{{ m.id }}" class="{{ 'done' if m.id in mine }}">{{ '✓' if m.id in mine else '○' }} {{ m.name }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+
+    <section id="whatif">
+      <h2>What if…?</h2>
+      {% if not me %}
+        <p class="muted">Sign in and reach a milestone to suggest a change.</p>
+      {% elif not eligible %}
+        <p class="muted" id="locked">Reach a milestone in this version to unlock suggestions.</p>
+      {% elif left <= 0 and not is_admin %}
+        <p class="muted">You used today's suggestion. Vote for other ideas below!</p>
+      {% else %}
+        <form method="post" action="/g/{{ game.slug }}/v/{{ v.id }}/suggest">
+          <label for="title">What if…</label>
+          <input id="title" name="title" maxlength="140" required placeholder="the drifters slowed down when you are low on lives?">
+          <label for="body">More details (optional)</label>
+          <textarea id="body" name="body" maxlength="2000" rows="3"></textarea>
+          <button>Suggest</button>
+        </form>
+      {% endif %}
+    </section>
+  </aside>
+</div>
+
+<section id="suggestions">
+  <h2>Ideas</h2>
+  {% if suggestions %}
+  <ul class="ideas">
+    {% for s in suggestions %}
+    <li>
+      <div class="votes">{{ s.votes }}</div>
+      <div class="idea">
+        <strong>What if {{ s.title }}</strong>
+        {% if s.body %}<p>{{ s.body }}</p>{% endif %}
+        <span class="muted">by @{{ s.login }} · on <code>{{ s.base_version }}</code></span>
+      </div>
+      {% if me and eligible and s.login != me and not s.voted and s.base_version == v.id %}
+      <form method="post" action="/suggestions/{{ s.id }}/vote"><button class="small">Vote</button></form>
+      {% elif s.voted %}<span class="pill">voted</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">No ideas yet. Be the first!</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Versions</h2>
+  <ul class="versions">
+    {% for x in versions %}
+    <li><a href="/g/{{ game.slug }}/v/{{ x.id }}"><code>{{ x.id }}</code></a>{% if x.id == game.main_version %} <span class="pill">main</span>{% endif %}
+      <span class="muted">{{ x.created_at[:10] }}{% if x.parent %} · from <code>{{ x.parent }}</code>{% endif %}{% if x.credited_login %} · idea by @{{ x.credited_login }}{% endif %}</span>
+      {% if x.changelog %}<br><span>{{ x.changelog }}</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/game.js"></script>{% endblock %}
