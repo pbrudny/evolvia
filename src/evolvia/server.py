@@ -6,7 +6,9 @@ One app, two addresses:
   shown inside a sandboxed iframe, so AI-written game code can never reach the platform or the player's session.
 """
 
+import csv
 import hmac
+import io
 import json
 import mimetypes
 import os
@@ -23,7 +25,7 @@ from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import db
+from . import db, xp
 from .versions import install, version_dir
 
 CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
@@ -32,7 +34,6 @@ BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 PLAY_URL = os.environ.get("PLAY_URL", "http://localhost:8000").rstrip("/")
 PLAY_HOST = urlsplit(PLAY_URL).netloc
 ADMINS = {a.strip().lower() for a in os.environ.get("ADMIN_LOGINS", "").split(",") if a.strip()}
-SUGGESTIONS_PER_DAY = int(os.environ.get("SUGGESTIONS_PER_DAY", "1"))
 WORKER_TOKEN = os.environ.get("WORKER_TOKEN", "")
 # Claude picks ideas by itself: the top-voted open idea with at least AUTO_BUILD_MIN_VOTES votes, at most
 # AUTO_BUILDS_PER_DAY automatic builds per game. 0 votes = automatic picking off (admins accept by hand).
@@ -148,14 +149,29 @@ def eligible(conn, login: str | None, vid: str) -> bool:
     return conn.execute(q, (login, *ids)).fetchone() is not None
 
 
+# A suggestion's votes: the author's level bonus plus every vote's weight (a Curator's vote counts double).
+VOTES = "(s.bonus_votes + (SELECT COALESCE(SUM(weight), 0) FROM votes WHERE suggestion = s.id))"
+
+
 def suggestions_left(conn, login: str) -> int:
+    """Ideas per day come from the level (DESIGN.md §10.3). A Player gets one free idea ever, so newcomers can
+    always take part (the milestone check is separate)."""
     since = (datetime.now(UTC) - timedelta(days=1)).isoformat(timespec="seconds")
     used = conn.execute("SELECT COUNT(*) FROM suggestions WHERE login = ? AND created_at >= ?", (login, since)).fetchone()[0]
-    return max(0, SUGGESTIONS_PER_DAY - used)
+    per_day = xp.totals(conn, login)["per_day"]
+    if per_day == 0:
+        ever = conn.execute("SELECT 1 FROM suggestions WHERE login = ? LIMIT 1", (login,)).fetchone()
+        return 0 if ever else 1
+    return max(0, per_day - used)
 
 
 def page(request: Request, name: str, **ctx) -> HTMLResponse:
-    return templates.TemplateResponse(request, name, {"me": me(request), "is_admin": is_admin(me(request)), **ctx})
+    login = me(request)
+    my_xp = None
+    if login:
+        with db.connect() as conn:
+            my_xp = xp.totals(conn, login)
+    return templates.TemplateResponse(request, name, {"me": login, "is_admin": is_admin(login), "my_xp": my_xp, **ctx})
 
 
 # ---------- pages ----------
@@ -196,22 +212,23 @@ def game_version(request: Request, slug: str, vid: str):
         mine = {r["milestone"] for r in conn.execute(
             "SELECT milestone FROM milestones WHERE login = ? AND version = ?", (login, vid))} if login else set()
         suggestions = conn.execute(
-            "SELECT s.*, (SELECT COUNT(*) FROM votes WHERE suggestion = s.id) AS votes, "
+            f"SELECT s.*, {VOTES} AS votes, "
             "EXISTS(SELECT 1 FROM votes WHERE suggestion = s.id AND login = ?) AS voted "
             "FROM suggestions s WHERE s.game = ? AND s.status = 'open' ORDER BY votes DESC, s.id",
             (login or "", slug),
         ).fetchall()
         builds = conn.execute(
-            "SELECT s.*, (SELECT COUNT(*) FROM votes WHERE suggestion = s.id) AS votes FROM suggestions s "
+            f"SELECT s.*, {VOTES} AS votes FROM suggestions s "
             "WHERE s.game = ? AND s.status != 'open' ORDER BY COALESCE(s.updated_at, s.created_at) DESC LIMIT 20",
             (slug,),
         ).fetchall()
         versions = conn.execute("SELECT * FROM versions WHERE game = ? ORDER BY created_at DESC", (slug,)).fetchall()
         can = eligible(conn, login, vid)
         left = suggestions_left(conn, login) if login else 0
+        per_day = xp.totals(conn, login)["per_day"] if login else 0
     return page(
         request, "game.html", game=game, v=v, milestones=json.loads(v["milestones"]), mine=mine,
-        suggestions=suggestions, builds=builds, versions=versions, eligible=can, left=left,
+        suggestions=suggestions, builds=builds, versions=versions, eligible=can, left=left, per_day=per_day,
         auto_votes=AUTO_BUILD_MIN_VOTES, play_origin=PLAY_URL,
         frame_src=f"{PLAY_URL}/v/{vid}/index.html?t={TICKETS.dumps(vid)}" if login else None,
     )
@@ -297,11 +314,14 @@ async def start_session(request: Request):
     vid, seed = str(body.get("version", "")), body.get("seed")
     with db.connect() as conn:
         version_row(conn, vid)
+        first = conn.execute("SELECT 1 FROM sessions WHERE login = ? AND version = ? LIMIT 1", (login, vid)).fetchone() is None
         sid = conn.execute(
             "INSERT INTO sessions (login, version, seed, started_at) VALUES (?, ?, ?, ?)",
             (login, vid, int(seed) if isinstance(seed, int) else None, db.now()),
         ).lastrowid
         db.emit(conn, "SessionStarted", login, version=vid, session=sid)
+        if first:
+            xp.award_player(conn, vid, login)
     return {"session": sid}
 
 
@@ -327,6 +347,8 @@ async def milestone(request: Request, sid: int):
         if elapsed < m["minSeconds"]:
             db.emit(conn, "MilestoneRejected", login, version=s["version"], milestone=mid, seconds=round(elapsed, 1))
             return JSONResponse({"ok": False, "reason": "too fast"}, status_code=400)
+        first_here = conn.execute("SELECT 1 FROM milestones WHERE login = ? AND version = ? LIMIT 1",
+                                  (login, s["version"])).fetchone() is None
         new = conn.execute(
             "INSERT OR IGNORE INTO milestones (login, version, milestone, session, seconds, reached_at) "
             "VALUES (?, ?, ?, ?, ?, ?)", (login, s["version"], mid, sid, int(elapsed), db.now()),
@@ -334,6 +356,8 @@ async def milestone(request: Request, sid: int):
         if new:
             db.emit(conn, "MilestoneReached", login, game=v["game"], version=s["version"], milestone=mid,
                     seconds=int(elapsed))
+            if first_here:
+                xp.award(conn, login, xp.MILESTONE, "milestone", game=v["game"], version=s["version"])
         return {"ok": True, "new": bool(new), "name": m["name"], "eligible": eligible(conn, login, s["version"])}
 
 
@@ -367,10 +391,11 @@ def suggest(request: Request, slug: str, vid: str, title: str = Form(...), body:
         if not eligible(conn, login, vid):
             raise HTTPException(403, "Reach a milestone in this version first")
         if not is_admin(login) and suggestions_left(conn, login) <= 0:
-            raise HTTPException(429, "One suggestion per day. Vote for others in the meantime!")
+            raise HTTPException(429, "No ideas left today for your level. Vote for others in the meantime!")
         sid = conn.execute(
-            "INSERT INTO suggestions (game, base_version, login, title, body, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (slug, vid, login, title, body, db.now()),
+            "INSERT INTO suggestions (game, base_version, login, title, body, bonus_votes, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (slug, vid, login, title, body, xp.totals(conn, login)["bonus_votes"], db.now()),
         ).lastrowid
         db.emit(conn, "SuggestionSubmitted", login, game=slug, version=vid, suggestion=sid, title=title)
     return RedirectResponse(f"/g/{slug}/v/{vid}#suggestions", status_code=303)
@@ -387,9 +412,11 @@ def vote(request: Request, sid: int):
             raise HTTPException(400, "You can't vote for your own idea")
         if not eligible(conn, login, s["base_version"]):
             raise HTTPException(403, "Reach a milestone in this version first")
-        if conn.execute("INSERT OR IGNORE INTO votes (suggestion, login, created_at) VALUES (?, ?, ?)",
-                        (sid, login, db.now())).rowcount:
-            db.emit(conn, "SuggestionVoted", login, game=s["game"], suggestion=sid)
+        weight = xp.totals(conn, login)["vote_weight"]
+        if conn.execute("INSERT OR IGNORE INTO votes (suggestion, login, weight, created_at) VALUES (?, ?, ?, ?)",
+                        (sid, login, weight, db.now())).rowcount:
+            db.emit(conn, "SuggestionVoted", login, game=s["game"], suggestion=sid, weight=weight)
+            xp.award(conn, s["login"], xp.VOTE, "vote", game=s["game"], version=s["base_version"])
     return RedirectResponse(f"/g/{s['game']}/v/{s['base_version']}#suggestions", status_code=303)
 
 
@@ -454,8 +481,8 @@ def auto_pick(conn):
         return None
     since = (datetime.now(UTC) - timedelta(days=1)).isoformat(timespec="seconds")
     s = conn.execute(
-        "SELECT s.*, (SELECT COUNT(*) FROM votes WHERE suggestion = s.id) AS votes FROM suggestions s "
-        "WHERE s.status = 'open' AND (SELECT COUNT(*) FROM votes WHERE suggestion = s.id) >= ? "
+        f"SELECT s.*, {VOTES} AS votes FROM suggestions s "
+        f"WHERE s.status = 'open' AND {VOTES} >= ? "
         "AND (SELECT COUNT(*) FROM events e WHERE e.type = 'SuggestionAccepted' AND e.actor = 'claude' AND e.at >= ? "
         "     AND json_extract(e.data, '$.game') = s.game) < ? "
         "ORDER BY votes DESC, s.id LIMIT 1",
@@ -544,7 +571,49 @@ async def worker_result(request: Request, sid: int):
     with db.connect() as conn:
         set_status(conn, sid, "live", changelog, result_version=vid)
         db.emit(conn, "BuildSucceeded", "worker", game=s["game"], suggestion=sid, version=vid, author=s["login"])
+        xp.award(conn, s["login"], xp.LIVE, "live", game=s["game"], version=vid)
     return {"ok": True, "version": vid}
+
+
+# ---------- XP: profiles and the admin export ----------
+
+@app.get("/p/{login}", response_class=HTMLResponse)
+def profile(request: Request, login: str):
+    with db.connect() as conn:
+        if not conn.execute("SELECT 1 FROM players WHERE login = ?", (login,)).fetchone():
+            raise HTTPException(404, "No such player")
+        t = xp.totals(conn, login)
+        history = conn.execute("SELECT * FROM xp WHERE login = ? ORDER BY id DESC LIMIT 200", (login,)).fetchall()
+        live = conn.execute("SELECT id, game, title, result_version FROM suggestions WHERE login = ? AND status = 'live' "
+                            "ORDER BY id DESC", (login,)).fetchall()
+    return page(request, "profile.html", player=login, t=t, history=history, live=live, levels=xp.LEVELS,
+                unlocks=xp.UNLOCKS)
+
+
+def roster() -> dict[str, str]:
+    """GitHub login → student name, from DATA_DIR/roster.json (built from the EDP roster, as in student-portal)."""
+    try:
+        return {k.lower(): v for k, v in json.loads((db.DATA_DIR / "roster.json").read_text()).items()}
+    except (OSError, ValueError):
+        return {}
+
+
+@app.get("/admin/xp.csv")
+def xp_csv(request: Request):
+    if not is_admin(me(request)):
+        raise HTTPException(403)
+    names = roster()
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["login", "name", "level", "current_xp", "lifetime_xp", "live_suggestions", "confirmed_bugs"])
+    with db.connect() as conn:
+        for (login,) in conn.execute("SELECT login FROM players ORDER BY login").fetchall():
+            t = xp.totals(conn, login)
+            live = conn.execute("SELECT COUNT(*) FROM suggestions WHERE login = ? AND status = 'live'", (login,)).fetchone()[0]
+            bugs = conn.execute("SELECT COUNT(*) FROM xp WHERE login = ? AND reason = 'bug'", (login,)).fetchone()[0]
+            w.writerow([login, names.get(login.lower(), ""), t["level"], t["current"], t["lifetime"], live, bugs])
+    return Response(out.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": 'attachment; filename="evolvia-xp.csv"'})
 
 
 # ---------- public event feed (for students' consumers) ----------

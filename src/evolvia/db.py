@@ -66,6 +66,16 @@ CREATE TABLE IF NOT EXISTS votes (
     created_at TEXT NOT NULL,
     PRIMARY KEY (suggestion, login)
 );
+CREATE TABLE IF NOT EXISTS xp (           -- append-only XP history (DESIGN.md §10)
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    login TEXT NOT NULL,
+    points INTEGER NOT NULL,
+    reason TEXT NOT NULL,             -- milestone | vote | live | players | bug | prototype | rollback | manual
+    game TEXT,
+    version TEXT,
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS xp_login ON xp (login);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     type TEXT NOT NULL,
@@ -94,6 +104,8 @@ MIGRATIONS = [
     ("suggestions", "build_note", "TEXT NOT NULL DEFAULT ''"),
     ("suggestions", "result_version", "TEXT"),
     ("suggestions", "updated_at", "TEXT"),
+    ("suggestions", "bonus_votes", "INTEGER NOT NULL DEFAULT 0"),  # Builder level and up: +3
+    ("votes", "weight", "INTEGER NOT NULL DEFAULT 1"),              # Curator: 2
 ]
 
 

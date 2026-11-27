@@ -3,13 +3,14 @@
   evolvia-admin add-game --game spark-run --name "Spark Run" --repo pbrudny/evolvia-template [--ref main]
   evolvia-admin add-version --game spark-run --ref <branch|sha> [--parent <version>] [--changelog "..."] [--credit <login>] [--main]
   evolvia-admin set-main --game spark-run --version spark-run-abc1234
+  evolvia-admin xp --login alice --points 10 --reason bug [--game spark-run] [--version spark-run-abc1234]
   evolvia-admin list
 """
 
 import argparse
 import json
 
-from . import db
+from . import db, xp
 from .versions import install
 
 
@@ -41,6 +42,12 @@ def main() -> None:
     sg.add_argument("--body", default="")
     ac = sub.add_parser("accept", help="send an idea to the build worker")
     ac.add_argument("--suggestion", type=int, required=True)
+    x = sub.add_parser("xp", help="award XP by hand: bug +10, prototype +50, rollback -20")
+    x.add_argument("--login", required=True)
+    x.add_argument("--points", type=int, required=True)
+    x.add_argument("--reason", required=True, choices=["bug", "prototype", "rollback", "manual"])
+    x.add_argument("--game")
+    x.add_argument("--version")
     sub.add_parser("list")
     args = p.parse_args()
     db.init()
@@ -79,6 +86,10 @@ def main() -> None:
                          (db.now(), args.suggestion))
             db.emit(conn, "SuggestionAccepted", "admin", game=s["game"], suggestion=args.suggestion, title=s["title"], author=s["login"])
         print(f"suggestion {args.suggestion} accepted")
+    elif args.cmd == "xp":
+        with db.connect() as conn:
+            xp.award(conn, args.login, args.points, args.reason, game=args.game, version=args.version, actor="admin")
+            print(json.dumps(xp.totals(conn, args.login)))
     elif args.cmd == "add-suggestion":
         with db.connect() as conn:
             g = conn.execute("SELECT * FROM games WHERE slug = ?", (args.game,)).fetchone()

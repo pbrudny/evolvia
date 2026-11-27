@@ -43,7 +43,7 @@
       {% elif not eligible %}
         <p class="muted" id="locked">Reach a milestone in this version to unlock suggestions.</p>
       {% elif left <= 0 and not is_admin %}
-        <p class="muted">You used today's suggestion. Vote for other ideas below!</p>
+        <p class="muted">{% if per_day == 0 %}You used your free idea. Reach 20 XP (Contributor) for one idea per day.{% else %}You used today's ideas ({{ per_day }} per day at your level). Vote for other ideas below!{% endif %} <a href="/p/{{ me }}">Your XP</a></p>
       {% else %}
         <form method="post" action="/g/{{ game.slug }}/v/{{ v.id }}/suggest">
           <label for="title">What if…</label>

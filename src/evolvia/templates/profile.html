@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}@{{ player }} · Evolvia{% endblock %}
+{% set reasons = {"milestone": "Reached a milestone", "vote": "Your idea got a vote", "live": "Your idea went live",
+                  "players": "A new player played your version", "bug": "Bug report confirmed",
+                  "prototype": "Your idea won a prototype round", "rollback": "Your version was rolled back", "manual": "Awarded by the instructor"} %}
+{% block main %}
+<section>
+  <h1>@{{ player }}</h1>
+  <p class="muted">{{ t.level }} · {{ t.unlocks }}</p>
+  <div class="xp-stats">
+    <div><span class="muted">Current XP</span><strong>{{ t.current }}</strong></div>
+    <div><span class="muted">Lifetime XP</span><strong>{{ t.lifetime }}</strong></div>
+    <div><span class="muted">Ideas that went live</span><strong>{{ live|length }}</strong></div>
+  </div>
+  {% if t.next_level %}
+  <p style="margin-top:1rem">{{ t.next_at - t.current }} XP to <strong>{{ t.next_level }}</strong></p>
+  <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="{{ t.next_at }}" aria-valuenow="{{ t.current }}"><span style="width: {{ (100 * t.current / t.next_at)|round(0, 'floor')|int }}%"></span></div>
+  {% endif %}
+  <p class="muted">Current XP loses 20% each month, so recent activity counts most. Lifetime XP never goes down.</p>
+</section>
+
+<section>
+  <h2>Levels</h2>
+  <ul class="levels">
+    {% for name, need, per_day, bonus, weight in levels %}
+    <li class="{{ 'now' if name == t.level }}">{{ '▶' if name == t.level else '·' }} {{ name }} ({{ need }} XP): {{ unlocks[name] }}</li>
+    {% endfor %}
+  </ul>
+</section>
+
+{% if live %}
+<section>
+  <h2>Ideas that went live</h2>
+  <ul class="versions">
+    {% for s in live %}<li><a href="/g/{{ s.game }}/v/{{ s.result_version }}">What if {{ s.title }}</a></li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section>
+  <h2>XP history</h2>
+  {% if history %}
+  <table class="xp">
+    <thead><tr><th>When</th><th>What</th><th>Version</th><th style="text-align:right">XP</th></tr></thead>
+    <tbody>
+    {% for h in history %}
+      <tr><td>{{ h.at[:10] }}</td><td>{{ reasons.get(h.reason, h.reason) }}</td>
+        <td>{% if h.version %}<a href="/g/{{ h.game }}/v/{{ h.version }}"><code>{{ h.version }}</code></a>{% endif %}</td>
+        <td class="pts{{ ' neg' if h.points < 0 }}">{{ '%+d'|format(h.points) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No XP yet. Play a game and reach a milestone: that is +5 XP.</p>
+  {% endif %}
+</section>
+{% endblock %}

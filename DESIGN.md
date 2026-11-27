@@ -325,8 +325,8 @@ Based on the Ember Realms loop: a build costs about $0.50–1.50, and a prototyp
 1. `evolvia-template` with the game contract, gates and bot, plus a first tiny game, built by hand as a test.
 2. Platform: GitHub login, game page with iframe, milestones, suggestion form, voting.
 3. Build pipeline for suggestions, deploy to the version host, changelog.
-4. Version tree and URLs, Piotr approves the main version.
-5. XP history and levels.
+4. Version tree and URLs, Piotr approves the main version. (done)
+5. XP history and levels. (done; build queue priority still orders by votes only)
 6. Idea round and prototype round.
 
 **Phase 3: students take part.** Students play, suggest and vote, and build event consumers (§11.1). Pull requests to the game repos are also welcome and go through the same gates and review.

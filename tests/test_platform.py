@@ -15,7 +15,7 @@ os.environ["WORKER_TOKEN"] = "worker-secret"
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from evolvia import db, server  # noqa: E402
+from evolvia import db, server, xp  # noqa: E402
 from evolvia.versions import version_dir  # noqa: E402
 
 GAME, V0, V1 = "spark-run", "spark-run-aaaaaaa", "spark-run-bbbbbbb"
@@ -125,7 +125,7 @@ def test_suggest_needs_a_milestone_and_is_limited(monkeypatch):
     assert r.status_code == 429
     # a milestone in the parent version also unlocks the child version
     page = alice.get(f"/g/{GAME}/v/{V1}").text
-    assert "You used today's suggestion" in page
+    assert "You used your free idea" in page
 
 
 def test_votes(monkeypatch):
@@ -217,8 +217,9 @@ def test_claude_picks_the_top_voted_idea(monkeypatch):
                            (GAME, V0, "carol", "one vote only", db.now())).lastrowid
         top = conn.execute("INSERT INTO suggestions (game, base_version, login, title, created_at) VALUES (?, ?, ?, ?, ?)",
                            (GAME, V0, "carol", "two votes", db.now())).lastrowid
-        conn.execute("INSERT INTO votes VALUES (?, 'x1', ?)", (low, db.now()))
-        conn.execute("INSERT INTO votes VALUES (?, 'x1', ?), (?, 'x2', ?)", (top, db.now(), top, db.now()))
+        conn.execute("INSERT INTO votes (suggestion, login, created_at) VALUES (?, 'x1', ?)", (low, db.now()))
+        conn.execute("INSERT INTO votes (suggestion, login, created_at) VALUES (?, 'x1', ?), (?, 'x2', ?)",
+                     (top, db.now(), top, db.now()))
     plain = TestClient(server.app, base_url="http://platform.test")
     job = plain.post("/api/worker/next", headers=W).json()["job"]
     assert job["suggestion"] == top
@@ -227,7 +228,7 @@ def test_claude_picks_the_top_voted_idea(monkeypatch):
     assert ev["actor"] == "claude" and ev["data"]["suggestion"] == top
     monkeypatch.setattr(server, "AUTO_BUILDS_PER_DAY", 1)                       # daily limit per game
     with db.connect() as conn:
-        conn.execute("INSERT INTO votes VALUES (?, 'x2', ?)", (low, db.now()))
+        conn.execute("INSERT INTO votes (suggestion, login, created_at) VALUES (?, 'x2', ?)", (low, db.now()))
     assert plain.post("/api/worker/next", headers=W).json() == {"job": None}
 
 
@@ -276,3 +277,82 @@ def test_multiverse_tree(monkeypatch):
     boss = client_as("boss", monkeypatch)
     assert "Make main" in boss.get(f"/g/{GAME}/tree").text
     assert f"/g/{GAME}/tree?here={V0}" in boss.get(f"/g/{GAME}/v/{V0}").text
+
+
+# ---------- XP and levels ----------
+
+def xp_of(login):
+    with db.connect() as conn:
+        return xp.totals(conn, login)
+
+
+def test_xp_from_milestone_vote_and_live():
+    # alice: milestone on V0 (+5), dave voted for her idea (+1), the idea went live (+30)
+    with db.connect() as conn:
+        reasons = sorted(r["reason"] for r in conn.execute("SELECT reason FROM xp WHERE login = 'alice'"))
+    assert reasons == ["live", "milestone", "vote"]
+    t = xp_of("alice")
+    assert t["lifetime"] == 36 and t["current"] == 36 and t["level"] == "Contributor" and t["per_day"] == 1
+    types = [e["type"] for e in TestClient(server.app, base_url="http://platform.test").get("/api/events").json()]
+    assert "XpAwarded" in types and "LevelReached" in types
+
+
+def test_xp_decays_but_lifetime_does_not():
+    month_ago = (datetime.now(UTC) - timedelta(days=30)).isoformat(timespec="seconds")
+    assert round(xp.decayed(100, month_ago)) == 80
+    with db.connect() as conn:
+        conn.execute("INSERT INTO xp (login, points, reason, at) VALUES ('old', 100, 'manual', ?)", (month_ago,))
+        t = xp.totals(conn, "old")
+    assert (t["current"], t["lifetime"], t["level"]) == (80, 100, "Contributor")
+
+
+def test_players_on_your_version_give_xp_up_to_50(monkeypatch):
+    with db.connect() as conn:
+        conn.execute("UPDATE versions SET credited_login = 'erin' WHERE id = ?", (V1,))
+    frank = client_as("frank", monkeypatch)
+    frank.post("/api/sessions", json={"version": V1, "seed": 1})
+    frank.post("/api/sessions", json={"version": V1, "seed": 2})       # same player again: no XP
+    erin = client_as("erin", monkeypatch)
+    erin.post("/api/sessions", json={"version": V1, "seed": 1})        # own version: no XP
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM xp WHERE login = 'erin' AND reason = 'players'").fetchone()[0] == 1
+        for i in range(60):
+            xp.award_player(conn, V1, f"p{i}")
+        assert conn.execute("SELECT COUNT(*) FROM xp WHERE login = 'erin' AND reason = 'players'").fetchone()[0] == 50
+
+
+def test_levels_give_bonus_votes_and_double_votes(monkeypatch):
+    with db.connect() as conn:
+        xp.award(conn, "gina", 120, "manual")    # Builder
+        xp.award(conn, "hank", 700, "manual")    # Curator
+        conn.execute("INSERT OR IGNORE INTO players (login, created_at) VALUES ('gina', ?)", (db.now(),))
+    for login in ("gina", "hank"):
+        c = client_as(login, monkeypatch)
+        s = c.post("/api/sessions", json={"version": V0, "seed": 1}).json()["session"]
+        age_session(s, 60)
+        c.post(f"/api/sessions/{s}/milestone", json={"id": "level3"})
+    gina, hank = client_as("gina", monkeypatch), client_as("hank", monkeypatch)
+    assert gina.post(f"/g/{GAME}/v/{V0}/suggest", data={"title": "lasers everywhere"}, follow_redirects=False).status_code == 303
+    assert gina.post(f"/g/{GAME}/v/{V0}/suggest", data={"title": "a second idea"}, follow_redirects=False).status_code == 303
+    assert gina.post(f"/g/{GAME}/v/{V0}/suggest", data={"title": "a third idea"}, follow_redirects=False).status_code == 429
+    with db.connect() as conn:
+        sid = conn.execute("SELECT id, bonus_votes FROM suggestions WHERE title = 'lasers everywhere'").fetchone()
+    assert sid["bonus_votes"] == 3
+    hank.post(f"/suggestions/{sid['id']}/vote", follow_redirects=False)
+    with db.connect() as conn:
+        votes = conn.execute(f"SELECT {server.VOTES} FROM suggestions s WHERE id = ?", (sid["id"],)).fetchone()[0]
+    assert votes == 5   # 3 bonus + a Curator's vote counts 2
+
+
+def test_profile_and_admin_csv(monkeypatch):
+    anon = TestClient(server.app, base_url="http://platform.test")
+    r = anon.get("/p/alice")
+    assert r.status_code == 200 and "Contributor" in r.text and "Your idea went live" in r.text
+    assert anon.get("/p/nobody").status_code == 404
+    alice = client_as("alice", monkeypatch)
+    assert "Contributor · 36 XP" in alice.get("/").text
+    assert alice.get("/admin/xp.csv").status_code == 403
+    (db.DATA_DIR / "roster.json").write_text(json.dumps({"Alice": "Alice Example"}))
+    csv_text = client_as("boss", monkeypatch).get("/admin/xp.csv").text
+    assert "login,name,level,current_xp,lifetime_xp,live_suggestions,confirmed_bugs" in csv_text
+    assert "alice,Alice Example,Contributor,36,36,1,0" in csv_text

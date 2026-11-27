@@ -17,7 +17,7 @@ A class project for Event Driven Programming at ATA. Every step is an event, so 
 | Phase | What | Status |
 |-------|------|--------|
 | 1 | Brainstorming with the class | done, 27 Nov 2026 |
-| 2 | MVP: game template ✓, platform ✓ (login, milestones, ideas, votes), AI build pipeline ✓ | in progress (version tree ✓ at `/g/<slug>/tree`; XP next) |
+| 2 | MVP: game template ✓, platform ✓ (login, milestones, ideas, votes), AI build pipeline ✓, Multiverse ✓, XP and levels ✓ | in progress (idea and prototype rounds next) |
 | 3 | Students play, suggest, vote and build event consumers | later |
 
 ## Repos
@@ -48,8 +48,17 @@ Admin (on the server: `docker exec <container> evolvia-admin ...`):
 evolvia-admin add-game --game spark-run --name "Spark Run" --repo pbrudny/evolvia-template
 evolvia-admin add-version --game spark-run --ref <branch|sha> --changelog "..." --credit <login> [--main]
 evolvia-admin set-main --game spark-run --version spark-run-abc1234
+evolvia-admin xp --login alice --points 10 --reason bug   # bug +10, prototype +50, rollback -20, manual
 evolvia-admin list
 ```
+
+## XP and levels
+
+XP follows DESIGN.md §10. It is awarded automatically: +5 for the first milestone on a version, +1 when someone votes for your idea, +30 when it goes live, and +1 for each new player on your version (max 50). Bugs, prototype rounds and rollbacks are awarded by hand with `evolvia-admin xp`. Every award is a row in the append-only `xp` table and an `XpAwarded` event (`LevelReached` on a level-up).
+
+Current XP loses 20% per month, lifetime XP never does. The level comes from current XP and sets ideas per day: Player gets one free idea, then 0 per day; Contributor (20) 1; Builder (100) 2 and +3 votes on new ideas; Architect (300) 3; Curator (600) 3 and double votes.
+
+Pages: `/p/<login>` (level, XP history, live ideas), `/g/<slug>/tree` (the Multiverse). Admins: `/admin/xp.csv` (login, name, level, current, lifetime, live ideas, confirmed bugs). Names come from an optional `DATA_DIR/roster.json` (`{"github-login": "Student Name"}`).
 
 ## The build pipeline
 
@@ -68,7 +77,7 @@ uv run evolvia-worker try --repo pbrudny/evolvia-spark-run --title "..."  # buil
 
 Agents run as `claude -p` with `--setting-sources ""`, `--strict-mcp-config` and an explicit tool list, so no user settings, hooks, MCP servers or CLAUDE.md reach them. A typical build takes 2–3 minutes and about $0.50.
 
-Settings: `BASE_URL`, `PLAY_URL`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `SESSION_SECRET`, `ADMIN_LOGINS`, `SUGGESTIONS_PER_DAY` (default 1), `WORKER_TOKEN`, `DATA_DIR` (default `/data`).
+Settings: `BASE_URL`, `PLAY_URL`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `SESSION_SECRET`, `ADMIN_LOGINS`, `AUTO_BUILD_MIN_VOTES` (default 2), `AUTO_BUILDS_PER_DAY` (default 5), `WORKER_TOKEN`, `DATA_DIR` (default `/data`).
 
 ## Credits
 
