@@ -17,7 +17,7 @@ Design phase. Read the design: [DESIGN.md](DESIGN.md).
 | Phase | What | Status |
 |-------|------|--------|
 | 1 | Brainstorming with the class | done, 27 Nov 2026 |
-| 2 | MVP: game template, platform, build pipeline | next |
+| 2 | MVP: game template ✓, platform, build pipeline | in progress |
 | 3 | Students play, suggest, vote and build event consumers | later |
 
 ## Repos
@@ -25,7 +25,7 @@ Design phase. Read the design: [DESIGN.md](DESIGN.md).
 | Repo | What |
 |------|------|
 | `evolvia` (this one) | The platform: login, idea board, voting, builds, XP |
-| `evolvia-template` | Starting point for every game (not created yet) |
+| [`evolvia-template`](https://github.com/pbrudny/evolvia-template) | Starting point for every game: rules contract, sample game, bot, gates, constitution |
 | `evolvia-<slug>` | One repo per game (none yet) |
 
 ## Credits
