@@ -60,6 +60,10 @@ Current XP loses 20% per month, lifetime XP never does. The level comes from cur
 
 Pages: `/p/<login>` (level, XP history, live ideas), `/g/<slug>/tree` (the Multiverse). Admins: `/admin/xp.csv` (login, name, level, current, lifetime, live ideas, confirmed bugs). Names come from an optional `DATA_DIR/roster.json` (`{"github-login": "Student Name"}`).
 
+### Runs on the Claude subscription
+
+The worker calls `claude -p` with Piotr's claude.ai subscription login (`CLAUDE_CONFIG_DIR`, default `~/.claude`), never an API key: it removes `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` from the agents' environment and skips a poll unless `claude auth status` says `authMethod: claude.ai`. Builds count toward the subscription's usage limits; the dollar amounts in the log are estimates only.
+
 ## Idea rounds and prototype rounds
 
 `/rounds` (DESIGN.md §4.1–4.2). An admin or an Architect opens a round with two lengths: hours for ideas, hours to play and vote.

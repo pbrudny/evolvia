@@ -82,7 +82,19 @@ def claude_env() -> dict:
     env["CLAUDE_CONFIG_DIR"] = (os.environ.get("EVOLVIA_CLAUDE_CONFIG_DIR") or os.environ.get("CLAUDE_CONFIG_DIR")
                                 or str(Path.home() / ".claude"))
     env.setdefault("USER", os.environ.get("LOGNAME") or Path.home().name)
+    # Builds run on Piotr's Claude subscription only: never let an API key switch claude -p to API billing.
+    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):
+        env.pop(key, None)
     return env
+
+
+def subscription_ok() -> bool:
+    """True when claude -p is signed in with a claude.ai subscription (not an API key or console account)."""
+    try:
+        status = json.loads(run(["claude", "auth", "status"], check=False, timeout=60, env=claude_env()).stdout)
+    except (json.JSONDecodeError, subprocess.TimeoutExpired, OSError):
+        return False
+    return bool(status.get("loggedIn")) and status.get("authMethod") == "claude.ai"
 
 
 def schema_errors(schema: dict, v, path: str = "") -> list[str]:
@@ -346,6 +358,12 @@ def run_loop(once: bool) -> None:
             if once:
                 return
             time.sleep(120)
+            continue
+        if not subscription_ok():
+            log("claude is not signed in with the Claude subscription (run `claude` and /login), skipping this check")
+            if once:
+                return
+            time.sleep(300)
             continue
         job = api("POST", "/api/worker/next")["job"]
         if job:
