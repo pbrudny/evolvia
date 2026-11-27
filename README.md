@@ -17,7 +17,7 @@ A class project for Event Driven Programming at ATA. Every step is an event, so 
 | Phase | What | Status |
 |-------|------|--------|
 | 1 | Brainstorming with the class | done, 27 Nov 2026 |
-| 2 | MVP: game template ✓, platform ✓ (login, milestones, ideas, votes), AI build pipeline ✓ | in progress (version tree view, XP next) |
+| 2 | MVP: game template ✓, platform ✓ (login, milestones, ideas, votes), AI build pipeline ✓ | in progress (version tree ✓ at `/g/<slug>/tree`; XP next) |
 | 3 | Students play, suggest, vote and build event consumers | later |
 
 ## Repos

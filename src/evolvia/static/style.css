@@ -66,3 +66,20 @@ footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 1
 .spinner { display: inline-block; width: 0.8em; height: 0.8em; margin-right: 0.45em; border: 2px solid var(--warm); border-right-color: transparent; border-radius: 50%; animation: spin 0.9s linear infinite; vertical-align: -0.05em; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+
+/* Multiverse: the version tree */
+.tree, .tree ul { list-style: none; margin: 0; padding: 0; }
+.tree ul { margin-left: 1.4rem; padding-left: 1.2rem; }
+.tree ul > li::after { content: ""; position: absolute; left: -1.2rem; top: 0; bottom: 0; border-left: 2px solid var(--line); }
+.tree ul > li:last-child::after { bottom: auto; height: calc(1.9rem + 2px); }
+.tree li { position: relative; padding-top: 0.7rem; }
+.tree ul > li::before { content: ""; position: absolute; left: -1.2rem; top: 1.9rem; width: 1.1rem; border-top: 2px solid var(--line); }
+.tree ul > li.mainline::before { border-top-color: var(--accent); }
+.vcard { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 0.7rem 0.9rem; max-width: 44rem; }
+.vcard p { margin: 0.35rem 0; color: #c9d4e3; }
+.vcard.is-main { border-color: var(--accent); }
+.vcard.is-here { box-shadow: 0 0 0 2px var(--warm); }
+.vhead, .vfoot { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.vfoot { justify-content: space-between; }
+.button.small { padding: 0.3rem 0.75rem; font-size: 0.85rem; }
+.pill.here { background: rgba(255, 209, 102, 0.15); color: var(--warm); }

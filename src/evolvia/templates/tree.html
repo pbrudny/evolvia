@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Multiverse · {{ game.name }} · Evolvia{% endblock %}
+{% macro node(n) %}
+<li class="{{ 'mainline' if n.on_main_line }}">
+  <div class="vcard{{ ' is-main' if n.id == game.main_version }}{{ ' is-here' if n.id == here }}">
+    <div class="vhead">
+      <code>{{ n.id }}</code>
+      {% if n.id == game.main_version %}<span class="pill">main</span>{% endif %}
+      {% if n.id == here %}<span class="pill here">you were here</span>{% endif %}
+      <span class="muted">{{ n.created_at[:10] }}</span>
+    </div>
+    <p>{{ n.changelog or ('The first version.' if not n.parent else 'No description.') }}</p>
+    <div class="vfoot">
+      <span class="muted">{% if n.credited_login %}idea by <a href="https://github.com/{{ n.credited_login }}">@{{ n.credited_login }}</a> · {% endif %}{{ n.players }} player{{ '' if n.players == 1 else 's' }} · {{ n.finishers }} reached a milestone</span>
+      <span class="actions">
+        <a class="button small" href="/g/{{ game.slug }}/v/{{ n.id }}">Play ▶</a>
+        {% if is_admin and n.id != game.main_version %}<form method="post" action="/g/{{ game.slug }}/v/{{ n.id }}/promote"><button class="small link">Make main</button></form>{% endif %}
+      </span>
+    </div>
+  </div>
+  {% if n.children %}<ul>{% for c in n.children %}{{ node(c) }}{% endfor %}</ul>{% endif %}
+</li>
+{% endmacro %}
+{% block main %}
+<div class="game-head">
+  <h1>The {{ game.name }} Multiverse</h1>
+  <p class="muted">{{ count }} version{{ '' if count == 1 else 's' }}. Every idea that was built is a branch, and every branch stays playable. The highlighted line leads to the main version, the one new players get.</p>
+  <p><a href="/g/{{ game.slug }}">◀ Back to the main version</a></p>
+</div>
+{% if roots %}
+<ul class="tree">{% for r in roots %}{{ node(r) }}{% endfor %}</ul>
+{% else %}
+<p class="muted">No versions yet.</p>
+{% endif %}
+{% endblock %}

@@ -250,3 +250,29 @@ def test_build_progress_is_shown_live(monkeypatch):
     assert any(e["type"] == "BuildProgress" and e["data"]["message"] == "Writing the code…" for e in plain.get("/api/events").json())
     page = boss.get(f"/g/{GAME}/v/{V0}").text
     assert f'data-build="{sid}"' in page and "/static/builds.js" in page
+
+
+# ---------- the Multiverse ----------
+
+def test_multiverse_tree(monkeypatch):
+    V2 = "spark-run-ddddddd"
+    with db.connect() as conn:
+        conn.execute("INSERT INTO versions (id, game, sha, parent, milestones, changelog, credited_login, created_at) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (V2, GAME, "d" * 40, V0, json.dumps(MILESTONES),
+                                                         "Sparks are green.", "carol", db.now()))
+        roots = server.version_tree(conn, GAME, V1)
+    assert [r["id"] for r in roots] == [V0]
+    kids = {c["id"]: c for c in roots[0]["children"]}
+    assert set(kids) >= {V1, V2}
+    assert roots[0]["on_main_line"] and kids[V1]["on_main_line"] and not kids[V2]["on_main_line"]
+    assert roots[0]["players"] >= 2 and roots[0]["finishers"] >= 2   # alice and dave played V0
+
+    anon = TestClient(server.app, base_url="http://platform.test")
+    r = anon.get(f"/g/{GAME}/tree?here={V2}")
+    assert r.status_code == 200 and "Multiverse" in r.text
+    assert "Sparks are green." in r.text and "@carol" in r.text and "you were here" in r.text
+    assert f'href="/g/{GAME}/v/{V2}"' in r.text and "Make main" not in r.text
+    assert anon.get("/g/nope/tree").status_code == 404
+    boss = client_as("boss", monkeypatch)
+    assert "Make main" in boss.get(f"/g/{GAME}/tree").text
+    assert f"/g/{GAME}/tree?here={V0}" in boss.get(f"/g/{GAME}/v/{V0}").text

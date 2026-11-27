@@ -217,6 +217,37 @@ def game_version(request: Request, slug: str, vid: str):
     )
 
 
+def version_tree(conn, slug: str, main: str | None) -> list[dict]:
+    """The game's versions as a tree (DESIGN.md §8.1): each node has its children, unique players and
+    who reached a milestone. A version whose parent is unknown becomes a root. Oldest children first."""
+    rows = conn.execute(
+        "SELECT v.*, "
+        "(SELECT COUNT(DISTINCT login) FROM sessions WHERE version = v.id) AS players, "
+        "(SELECT COUNT(DISTINCT login) FROM milestones WHERE version = v.id) AS finishers "
+        "FROM versions v WHERE v.game = ? ORDER BY v.created_at, v.id", (slug,)).fetchall()
+    nodes = {r["id"]: {**dict(r), "children": [], "on_main_line": False} for r in rows}
+    roots = []
+    for n in nodes.values():
+        (nodes[n["parent"]]["children"] if n["parent"] in nodes else roots).append(n)
+    seen, vid = set(), main  # mark the path from the root to the main version
+    while vid in nodes and vid not in seen:
+        seen.add(vid)
+        nodes[vid]["on_main_line"] = True
+        vid = nodes[vid]["parent"]
+    return roots
+
+
+@app.get("/g/{slug}/tree", response_class=HTMLResponse)
+def game_tree(request: Request, slug: str, here: str = ""):
+    with db.connect() as conn:
+        game = conn.execute("SELECT * FROM games WHERE slug = ?", (slug,)).fetchone()
+        if not game:
+            raise HTTPException(404, "No such game")
+        roots = version_tree(conn, slug, game["main_version"])
+        count = conn.execute("SELECT COUNT(*) FROM versions WHERE game = ?", (slug,)).fetchone()[0]
+    return page(request, "tree.html", game=game, roots=roots, count=count, here=here)
+
+
 # ---------- login ----------
 
 @app.get("/login")

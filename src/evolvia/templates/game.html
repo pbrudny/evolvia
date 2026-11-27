@@ -5,6 +5,7 @@
   <h1>{{ game.name }}</h1>
   <p class="muted">
     Version <code>{{ v.id }}</code>{% if v.id == game.main_version %} · <span class="pill">main</span>{% else %} · <a href="/g/{{ game.slug }}">go to the main version</a>{% endif %}
+    · <a href="/g/{{ game.slug }}/tree?here={{ v.id }}">Multiverse</a>
     {% if v.credited_login %} · idea by <a href="https://github.com/{{ v.credited_login }}">@{{ v.credited_login }}</a>{% endif %}
   </p>
 </div>
@@ -106,16 +107,10 @@
   </ul>
 </section>
 
-<section>
+<section id="versions">
   <h2>Versions</h2>
-  <ul class="versions">
-    {% for x in versions %}
-    <li><a href="/g/{{ game.slug }}/v/{{ x.id }}"><code>{{ x.id }}</code></a>{% if x.id == game.main_version %} <span class="pill">main</span>{% endif %}
-      <span class="muted">{{ x.created_at[:10] }}{% if x.parent %} · from <code>{{ x.parent }}</code>{% endif %}{% if x.credited_login %} · idea by @{{ x.credited_login }}{% endif %}</span>
-      {% if x.changelog %}<br><span>{{ x.changelog }}</span>{% endif %}
-      {% if is_admin and x.id != game.main_version %}<form class="inline" method="post" action="/g/{{ game.slug }}/v/{{ x.id }}/promote"><button class="small link">Make this the main version</button></form>{% endif %}</li>
-    {% endfor %}
-  </ul>
+  <p>{{ versions|length }} version{{ '' if versions|length == 1 else 's' }} so far. <a href="/g/{{ game.slug }}/tree?here={{ v.id }}">Open the Multiverse</a> to see how the game branched and play any version.</p>
+  {% if is_admin and v.id != game.main_version %}<form class="inline" method="post" action="/g/{{ game.slug }}/v/{{ v.id }}/promote"><button class="small">Make this the main version</button></form>{% endif %}
 </section>
 {% endblock %}
 {% block scripts %}<script src="/static/game.js"></script><script src="/static/builds.js"></script>{% endblock %}
