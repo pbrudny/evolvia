@@ -107,7 +107,7 @@ All repos are public on GitHub under `pbrudny`, so players can read the code. Se
 - **Database.** Players, ideas, rounds, games, versions, suggestions, votes, milestones, XP history (append-only).
 - **Event broker.** All state changes are published as events (§11). It reuses the EDP broker that Ember Realms already publishes to, under the topic `evolvia.*`.
 - **Build workers.** Run the agent pipeline in a sandbox. First version: `claude -p` on a machine Piotr controls, the same pattern as `class_agent` and the Ember Realms loop. Later: containers.
-- **Version host.** Serves every version as static files at `/g/<slug>/v/<sha>/` on a **separate origin** (for example `play.evolvia.codewithpeter.com`), embedded in the platform page as a sandboxed iframe. Game code can't read the platform's cookies or call its API as the player.
+- **Version host.** Serves every version as static files at `/g/<slug>/v/<sha>/` on a **separate origin** (for example `evolvia-play.atabuilderslab.pl`), embedded in the platform page as a sandboxed iframe. Game code can't read the platform's cookies or call its API as the player.
 
 ### 5.3 How the game talks to the platform
 
