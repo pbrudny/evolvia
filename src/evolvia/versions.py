@@ -20,14 +20,17 @@ def version_dir(version_id: str):
     return VERSIONS / version_id
 
 
-def resolve_sha(repo: str, ref: str) -> str:
-    r = httpx.get(
-        f"https://api.github.com/repos/{repo}/commits/{ref}",
-        headers={"Accept": "application/vnd.github.sha"},
-        timeout=20,
-    )
+def download(repo: str, ref: str) -> tuple[str, bytes]:
+    """Download repo@ref as a tarball. Its top folder is "<repo>-<full sha>", which gives the exact commit
+    without the GitHub API (the API's anonymous rate limit is shared by every app on the server)."""
+    r = httpx.get(f"https://codeload.github.com/{repo}/tar.gz/{ref}", timeout=60, follow_redirects=True)
     r.raise_for_status()
-    return r.text.strip()
+    with tarfile.open(fileobj=io.BytesIO(r.content), mode="r:gz") as tar:
+        top = tar.getmembers()[0].name.split("/")[0]
+    sha = top.rsplit("-", 1)[-1]
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ValueError(f"unexpected archive layout: {top}")
+    return sha, r.content
 
 
 def _check_milestones(data) -> list[dict]:
@@ -42,16 +45,14 @@ def _check_milestones(data) -> list[dict]:
 def install(game: str, repo: str, ref: str, *, parent: str | None = None, changelog: str = "",
             credited_login: str | None = None, suggestion_id: int | None = None, actor: str = "system") -> str:
     """Download repo@ref, keep the allowed files, register the version. Returns the version id."""
-    sha = resolve_sha(repo, ref)
+    sha, archive = download(repo, ref)
     vid = f"{game}-{sha[:7]}"
-    r = httpx.get(f"https://codeload.github.com/{repo}/tar.gz/{sha}", timeout=60, follow_redirects=True)
-    r.raise_for_status()
 
     target = version_dir(vid)
     tmp = target.with_name(vid + ".tmp")
     shutil.rmtree(tmp, ignore_errors=True)
     kept = 0
-    with tarfile.open(fileobj=io.BytesIO(r.content), mode="r:gz") as tar:
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         for member in tar.getmembers():
             if not member.isfile():
                 continue
