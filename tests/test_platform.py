@@ -486,3 +486,20 @@ def test_merge_versions(monkeypatch):
     page = boss.get(f"/g/{GAME}/tree").text
     assert "Merged from" in page and "Play the merged version" in page
     assert "VersionsMerged" in [e["type"] for e in plain.get("/api/events").json()]
+
+
+# ---------- Slack announcer ----------
+
+def test_slack_messages_escape_player_text():
+    from evolvia import notify
+    names = {"spark-run": "Spark Run", ("changelog", "spark-run-abc"): "Sparks are green."}
+    text, key, _ = notify.render({"type": "SuggestionSubmitted", "actor": "eve", "data": {
+        "game": "spark-run", "version": "spark-run-abc", "suggestion": 7, "title": "<!channel> bombs & <http://x|y>"}}, names)
+    assert key is None and "&lt;!channel&gt;" in text and "<!channel>" not in text and "Spark Run" in text
+    assert notify.render({"type": "SuggestionRejected", "actor": "worker", "data": {"suggestion": 7, "reason": "too big"}},
+                         names)[1] == "s7"
+    text, key, broadcast = notify.render({"type": "BuildSucceeded", "actor": "worker", "data": {
+        "game": "spark-run", "suggestion": 7, "version": "spark-run-abc", "author": "eve"}}, names)
+    assert key == "s7" and broadcast and "Sparks are green." in text and "/g/spark-run/v/spark-run-abc" in text
+    assert notify.render({"type": "SessionStarted", "actor": "eve", "data": {}}, names) is None
+    assert TestClient(server.app, base_url="http://platform.test").get("/api/games").json()[0]["slug"] == GAME

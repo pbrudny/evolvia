@@ -427,6 +427,11 @@ def run_loop(once: bool) -> None:
     if not TOKEN:
         sys.exit("EVOLVIA_WORKER_TOKEN is not set")
     while True:
+        try:  # Slack announcer for #evolvia (an event consumer); never stops the worker
+            from .notify import notify
+            notify(log=log)
+        except Exception as e:  # noqa: BLE001
+            log(f"notify failed: {e}")
         # Don't take a job we can't build: the gates need Docker (Docker Desktop may be closed).
         if run(["docker", "info"], check=False, timeout=30).returncode != 0:
             log("Docker is not running, skipping this check")
@@ -475,6 +480,8 @@ def main() -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
     r.add_argument("--once", action="store_true")
+    n = sub.add_parser("notify", help="post new platform events to Slack #evolvia")
+    n.add_argument("--dry-run", action="store_true")
     t = sub.add_parser("try")
     t.add_argument("--repo", required=True)
     t.add_argument("--ref", default="main")
@@ -483,6 +490,10 @@ def main() -> None:
     t.add_argument("--author", default="pbrudny")
     t.add_argument("--push", action="store_true")
     args = p.parse_args()
+    if args.cmd == "notify":
+        from .notify import notify
+        notify(dry_run=args.dry_run)
+        return
     if not shutil.which("docker") or not shutil.which("claude"):
         sys.exit("needs docker and the claude CLI")
     if args.cmd == "run":

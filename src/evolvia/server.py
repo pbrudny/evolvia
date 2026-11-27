@@ -641,6 +641,13 @@ async def worker_progress(request: Request, sid: int):
     return {"ok": True}
 
 
+@app.get("/api/games")
+def games_list():
+    """Games and prototypes: slug, name, kind, main version. For event consumers (names are not in the events)."""
+    with db.connect() as conn:
+        return [dict(r) for r in conn.execute("SELECT slug, name, kind, main_version FROM games ORDER BY created_at")]
+
+
 @app.get("/api/games/{slug}/builds")
 def builds_status(slug: str):
     """Ideas that left the open list: status, live note and the new version. Polled by the game page."""
