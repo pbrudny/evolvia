@@ -20,6 +20,7 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from itsdangerous import BadSignature, URLSafeTimedSerializer
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import db
@@ -32,6 +33,10 @@ PLAY_URL = os.environ.get("PLAY_URL", "http://localhost:8000").rstrip("/")
 PLAY_HOST = urlsplit(PLAY_URL).netloc
 ADMINS = {a.strip().lower() for a in os.environ.get("ADMIN_LOGINS", "").split(",") if a.strip()}
 SUGGESTIONS_PER_DAY = int(os.environ.get("SUGGESTIONS_PER_DAY", "1"))
+SECRET = os.environ.get("SESSION_SECRET") or secrets.token_hex(32)
+# Only signed-in players get a play link: the game page is opened with a short-lived signed ticket.
+TICKETS = URLSafeTimedSerializer(SECRET, salt="play-ticket")
+TICKET_MAX_AGE = 12 * 3600
 
 db.init()
 HERE = Path(__file__).parent
@@ -70,6 +75,12 @@ def serve_game_file(request: Request) -> Response:
     path = (base / rel).resolve()
     if not str(path).startswith(str(base) + os.sep) or not path.is_file():
         return Response("Not found", 404)
+    if rel == "index.html":  # the entry page needs a ticket the platform gives only to signed-in players
+        try:
+            if TICKETS.loads(request.query_params.get("t", ""), max_age=TICKET_MAX_AGE) != vid:
+                raise BadSignature("wrong version")
+        except BadSignature:
+            return Response("Sign in on Evolvia to play.", 403)
     headers = {
         # The frame is sandboxed without allow-same-origin, so its origin is opaque: module scripts need CORS.
         "Access-Control-Allow-Origin": "*",
@@ -90,7 +101,7 @@ def serve_game_file(request: Request) -> Response:
 # never sends the platform cookie to a different host).
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.environ.get("SESSION_SECRET") or secrets.token_hex(32),
+    secret_key=SECRET,
     https_only=BASE_URL.startswith("https"),
     same_site="lax",
     max_age=30 * 24 * 3600,
@@ -191,7 +202,7 @@ def game_version(request: Request, slug: str, vid: str):
     return page(
         request, "game.html", game=game, v=v, milestones=json.loads(v["milestones"]), mine=mine,
         suggestions=suggestions, versions=versions, eligible=can, left=left,
-        frame_src=f"{PLAY_URL}/v/{vid}/index.html", play_origin=PLAY_URL,
+        frame_src=f"{PLAY_URL}/v/{vid}/index.html?t={TICKETS.dumps(vid)}" if login else None, play_origin=PLAY_URL,
     )
 
 
@@ -239,11 +250,9 @@ def logout(request: Request):
 
 @app.post("/api/sessions")
 async def start_session(request: Request):
-    login = me(request)
+    login = need_login(request)
     body = await request.json()
     vid, seed = str(body.get("version", "")), body.get("seed")
-    if not login:
-        return {"session": None, "note": "Not signed in: playing works, milestones are not recorded."}
     with db.connect() as conn:
         version_row(conn, vid)
         sid = conn.execute(

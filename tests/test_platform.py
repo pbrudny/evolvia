@@ -63,6 +63,10 @@ def age_session(sid: int, seconds: int):
 
 def test_play_host_serves_only_game_files_without_cookies():
     play = TestClient(server.app, base_url="http://play.test")
+    assert play.get(f"/v/{V0}/index.html").status_code == 403                      # no ticket
+    assert play.get(f"/v/{V0}/index.html?t=forged").status_code == 403
+    assert play.get(f"/v/{V0}/index.html?t={server.TICKETS.dumps(V1)}").status_code == 403  # ticket for another version
+    assert play.get(f"/v/{V0}/index.html?t={server.TICKETS.dumps(V0)}").status_code == 200
     r = play.get(f"/v/{V0}/game/main.js")
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/javascript")
     assert "connect-src 'none'" in r.headers["content-security-policy"]
@@ -75,20 +79,22 @@ def test_play_host_serves_only_game_files_without_cookies():
     assert play.post(f"/v/{V0}/index.html").status_code == 404
 
 
-def test_platform_page_frames_the_play_host():
-    c = TestClient(server.app, base_url="http://platform.test")
+def test_platform_page_frames_the_play_host(monkeypatch):
+    anon = TestClient(server.app, base_url="http://platform.test")
+    r = anon.get(f"/g/{GAME}/v/{V0}")
+    assert r.status_code == 200 and "Sign in to play" in r.text and "<iframe" not in r.text
+    c = client_as("erin", monkeypatch)
     r = c.get(f"/g/{GAME}/v/{V0}")
-    assert r.status_code == 200
-    assert 'sandbox="allow-scripts"' in r.text and f"http://play.test/v/{V0}/index.html" in r.text
+    assert 'sandbox="allow-scripts"' in r.text and f"http://play.test/v/{V0}/index.html?t=" in r.text
     assert "frame-src http://play.test" in r.headers["content-security-policy"]
     assert c.get(f"/g/{GAME}", follow_redirects=False).headers["location"] == f"/g/{GAME}/v/{V0}"
 
 
 # ---------- sessions and milestones ----------
 
-def test_anonymous_play_is_not_recorded():
+def test_sessions_need_sign_in():
     c = TestClient(server.app, base_url="http://platform.test")
-    assert c.post("/api/sessions", json={"version": V0, "seed": 1}).json()["session"] is None
+    assert c.post("/api/sessions", json={"version": V0, "seed": 1}).status_code == 401
 
 
 def test_milestone_time_check_and_unlock(monkeypatch):

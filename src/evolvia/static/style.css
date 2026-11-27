@@ -56,3 +56,5 @@ form button { margin-top: 0.7rem; }
 .versions li { border-left: 2px solid var(--line); padding-left: 0.8rem; }
 .pill { display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 999px; background: rgba(6, 214, 160, 0.15); color: var(--accent); }
 footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 1.5rem 1rem 2rem; border-top: 1px solid var(--line); }
+.signin-card { aspect-ratio: 16 / 9; display: grid; place-content: center; justify-items: center; gap: 0.4rem; text-align: center; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 1.5rem; }
+.signin-card p { color: var(--muted); max-width: 28rem; }

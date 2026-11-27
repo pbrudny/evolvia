@@ -11,9 +11,17 @@
 
 <div class="layout">
   <div class="stage">
+    {% if frame_src %}
     <iframe id="game" src="{{ frame_src }}" sandbox="allow-scripts" title="{{ game.name }}"
-            data-version="{{ v.id }}" data-play-origin="{{ play_origin }}" data-signed-in="{{ 'yes' if me else 'no' }}"></iframe>
-    <p id="status" class="muted" role="status">{% if not me %}You can play right away. <a href="/login?next={{ request.url.path }}">Sign in</a> to record milestones and suggest changes.{% else %}Click the game, then use the arrow keys.{% endif %}</p>
+            data-version="{{ v.id }}" data-play-origin="{{ play_origin }}" data-signed-in="yes"></iframe>
+    <p id="status" class="muted" role="status">Click the game, then use the arrow keys.</p>
+    {% else %}
+    <div class="signin-card">
+      <h2>Sign in to play</h2>
+      <p>Evolvia is played with your GitHub account, so your milestones, ideas and votes count.</p>
+      <a class="button" href="/login?next={{ request.url.path }}">Sign in with GitHub</a>
+    </div>
+    {% endif %}
     {% if v.changelog %}<p class="changelog"><strong>What changed:</strong> {{ v.changelog }}</p>{% endif %}
   </div>
 
