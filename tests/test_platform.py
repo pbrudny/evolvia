@@ -207,3 +207,25 @@ def test_worker_can_reject_with_a_reason(monkeypatch):
     plain.post(f"/api/worker/{sid}/result", headers=W, json={"status": "rejected", "reason": "Ads break rule 5."})
     page = boss.get(f"/g/{GAME}/v/{V0}").text
     assert "Ads break rule 5." in page and "status-rejected" in page
+
+
+def test_claude_picks_the_top_voted_idea(monkeypatch):
+    monkeypatch.setattr(server, "AUTO_BUILD_MIN_VOTES", 2)
+    with db.connect() as conn:
+        conn.execute("UPDATE suggestions SET status = 'live' WHERE status IN ('open', 'accepted', 'building')")
+        low = conn.execute("INSERT INTO suggestions (game, base_version, login, title, created_at) VALUES (?, ?, ?, ?, ?)",
+                           (GAME, V0, "carol", "one vote only", db.now())).lastrowid
+        top = conn.execute("INSERT INTO suggestions (game, base_version, login, title, created_at) VALUES (?, ?, ?, ?, ?)",
+                           (GAME, V0, "carol", "two votes", db.now())).lastrowid
+        conn.execute("INSERT INTO votes VALUES (?, 'x1', ?)", (low, db.now()))
+        conn.execute("INSERT INTO votes VALUES (?, 'x1', ?), (?, 'x2', ?)", (top, db.now(), top, db.now()))
+    plain = TestClient(server.app, base_url="http://platform.test")
+    job = plain.post("/api/worker/next", headers=W).json()["job"]
+    assert job["suggestion"] == top
+    assert plain.post("/api/worker/next", headers=W).json() == {"job": None}   # the 1-vote idea waits
+    ev = [e for e in plain.get("/api/events").json() if e["type"] == "SuggestionAccepted"][-1]
+    assert ev["actor"] == "claude" and ev["data"]["suggestion"] == top
+    monkeypatch.setattr(server, "AUTO_BUILDS_PER_DAY", 1)                       # daily limit per game
+    with db.connect() as conn:
+        conn.execute("INSERT INTO votes VALUES (?, 'x2', ?)", (low, db.now()))
+    assert plain.post("/api/worker/next", headers=W).json() == {"job": None}

@@ -58,6 +58,7 @@
 
 <section id="suggestions">
   <h2>Ideas</h2>
+  {% if auto_votes > 0 %}<p class="muted">The top idea with {{ auto_votes }} or more votes is built automatically by Claude.</p>{% endif %}
   {% if suggestions %}
   <ul class="ideas">
     {% for s in suggestions %}

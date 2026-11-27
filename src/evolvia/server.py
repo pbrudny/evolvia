@@ -34,6 +34,10 @@ PLAY_HOST = urlsplit(PLAY_URL).netloc
 ADMINS = {a.strip().lower() for a in os.environ.get("ADMIN_LOGINS", "").split(",") if a.strip()}
 SUGGESTIONS_PER_DAY = int(os.environ.get("SUGGESTIONS_PER_DAY", "1"))
 WORKER_TOKEN = os.environ.get("WORKER_TOKEN", "")
+# Claude picks ideas by itself: the top-voted open idea with at least AUTO_BUILD_MIN_VOTES votes, at most
+# AUTO_BUILDS_PER_DAY automatic builds per game. 0 votes = automatic picking off (admins accept by hand).
+AUTO_BUILD_MIN_VOTES = int(os.environ.get("AUTO_BUILD_MIN_VOTES", "2"))
+AUTO_BUILDS_PER_DAY = int(os.environ.get("AUTO_BUILDS_PER_DAY", "5"))
 SECRET = os.environ.get("SESSION_SECRET") or secrets.token_hex(32)
 # Only signed-in players get a play link: the game page is opened with a short-lived signed ticket.
 TICKETS = URLSafeTimedSerializer(SECRET, salt="play-ticket")
@@ -208,7 +212,8 @@ def game_version(request: Request, slug: str, vid: str):
     return page(
         request, "game.html", game=game, v=v, milestones=json.loads(v["milestones"]), mine=mine,
         suggestions=suggestions, builds=builds, versions=versions, eligible=can, left=left,
-        frame_src=f"{PLAY_URL}/v/{vid}/index.html?t={TICKETS.dumps(vid)}" if login else None, play_origin=PLAY_URL,
+        auto_votes=AUTO_BUILD_MIN_VOTES, play_origin=PLAY_URL,
+        frame_src=f"{PLAY_URL}/v/{vid}/index.html?t={TICKETS.dumps(vid)}" if login else None,
     )
 
 
@@ -412,6 +417,25 @@ def promote(request: Request, slug: str, vid: str):
     return RedirectResponse(f"/g/{slug}/v/{vid}", status_code=303)
 
 
+def auto_pick(conn):
+    """The top-voted open idea that has enough votes, in a game that has not used today's automatic builds."""
+    if AUTO_BUILD_MIN_VOTES <= 0:
+        return None
+    since = (datetime.now(UTC) - timedelta(days=1)).isoformat(timespec="seconds")
+    s = conn.execute(
+        "SELECT s.*, (SELECT COUNT(*) FROM votes WHERE suggestion = s.id) AS votes FROM suggestions s "
+        "WHERE s.status = 'open' AND (SELECT COUNT(*) FROM votes WHERE suggestion = s.id) >= ? "
+        "AND (SELECT COUNT(*) FROM events e WHERE e.type = 'SuggestionAccepted' AND e.actor = 'claude' AND e.at >= ? "
+        "     AND json_extract(e.data, '$.game') = s.game) < ? "
+        "ORDER BY votes DESC, s.id LIMIT 1",
+        (AUTO_BUILD_MIN_VOTES, since, AUTO_BUILDS_PER_DAY),
+    ).fetchone()
+    if s:
+        db.emit(conn, "SuggestionAccepted", "claude", game=s["game"], suggestion=s["id"], title=s["title"], author=s["login"],
+                votes=s["votes"], rule=f"top-voted with at least {AUTO_BUILD_MIN_VOTES} votes")
+    return s
+
+
 @app.post("/api/worker/next")
 def worker_next(request: Request):
     """Hand the oldest accepted idea to the build worker and mark it as building."""
@@ -419,6 +443,8 @@ def worker_next(request: Request):
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         s = conn.execute("SELECT * FROM suggestions WHERE status = 'accepted' ORDER BY updated_at, id LIMIT 1").fetchone()
+        if not s:
+            s = auto_pick(conn)
         if not s:
             return {"job": None}
         g = conn.execute("SELECT * FROM games WHERE slug = ?", (s["game"],)).fetchone()
