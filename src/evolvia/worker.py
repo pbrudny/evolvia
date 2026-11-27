@@ -1,0 +1,311 @@
+"""Build worker: turns an accepted player idea into a new game version.
+
+Runs on a machine with the `claude` CLI (Claude subscription), git, gh and Docker:
+
+    evolvia-worker run [--once]          poll the platform for accepted ideas and build them
+    evolvia-worker try --repo pbrudny/evolvia-spark-run --title "..." [--author pbrudny] [--push]
+                                         build an idea locally without the platform (for testing)
+
+Per idea: classifier (on topic? safe?) -> builder (edits files only, no shell) -> gates in a Docker sandbox with no
+network (up to 3 rounds) -> reviewer (up to 2 rounds) -> commit with Co-authored-by: <player> -> push -> report.
+AI-written code is never executed on this machine: only inside `docker run --network none`.
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+import httpx
+
+AGENTS = Path(__file__).parent / "agents"
+WORK = Path(os.environ.get("EVOLVIA_WORK", Path.home() / ".evolvia-worker"))
+PLATFORM = os.environ.get("EVOLVIA_URL", "https://evolvia.atabuilderslab.pl").rstrip("/")
+TOKEN = os.environ.get("EVOLVIA_WORKER_TOKEN", "")
+IMAGE = os.environ.get("EVOLVIA_SANDBOX_IMAGE", "node:20.20-alpine")
+MAX_BUILD_ROUNDS, MAX_REVIEW_ROUNDS = 3, 2
+# The builder may only change game files. Anything else it touches is reverted.
+PROTECTED = re.compile(r"^(game/platform\.js|gates\.mjs|constitution\.md|package\.json|\.github/.*|\.claude/.*|README\.md|LICENSE.*)$")
+ALLOWED = re.compile(r"^(game/[A-Za-z0-9_\-./]+|tests/[A-Za-z0-9_\-./]+\.mjs|bot\.js|index\.html|milestones\.json)$")
+
+SCHEMAS = {
+    "classifier": {"type": "object", "required": ["accept", "reason", "task"], "properties": {
+        "accept": {"type": "boolean"},
+        "reason": {"type": "string", "description": "shown to the player when rejected; short and friendly"},
+        "task": {"type": "string", "description": "the task for the builder, when accepted"}}},
+    "builder": {"type": "object", "required": ["status", "summary", "changelog", "files_changed"], "properties": {
+        "status": {"enum": ["done", "blocked"]},
+        "summary": {"type": "string"}, "changelog": {"type": "string"},
+        "files_changed": {"type": "array", "items": {"type": "string"}},
+        "blocked": {"type": ["string", "null"]}}},
+    "reviewer": {"type": "object", "required": ["approve", "blocking", "nits"], "properties": {
+        "approve": {"type": "boolean"},
+        "blocking": {"type": "array", "items": {"type": "string"}},
+        "nits": {"type": "array", "items": {"type": "string"}}}},
+}
+TOOLS = {
+    "classifier": "",
+    "builder": "Read,Edit,Write,Grep,Glob",
+    "reviewer": "Read,Grep,Glob,Bash",
+}
+ALLOW = {"reviewer": ["Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git status:*)"]}
+
+
+def log(msg: str) -> None:
+    print(f"[{datetime.now():%H:%M:%S}] {msg}", flush=True)
+
+
+def run(cmd: list[str], cwd: Path | None = None, check: bool = True, timeout: int = 600) -> subprocess.CompletedProcess:
+    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    if check and p.returncode != 0:
+        raise RuntimeError(f"{' '.join(cmd[:3])} failed: {(p.stderr or p.stdout)[-800:]}")
+    return p
+
+
+# ---------- agents ----------
+
+def schema_errors(schema: dict, v, path: str = "") -> list[str]:
+    if "enum" in schema:
+        return [] if v in schema["enum"] else [f"{path or 'value'} must be one of {schema['enum']}"]
+    t = schema.get("type")
+    if t == "object":
+        if not isinstance(v, dict):
+            return [f"{path or 'answer'} must be an object"]
+        errs = [f"missing key {k}" for k in schema.get("required", []) if k not in v]
+        for k, sub in schema.get("properties", {}).items():
+            if k in v and v[k] is not None:
+                errs += schema_errors(sub, v[k], k)
+        return errs
+    if t == "array":
+        return [] if isinstance(v, list) else [f"{path} must be an array"]
+    return []
+
+
+def parse_result(out: str) -> tuple[dict | None, dict]:
+    res = json.loads(out)
+    if isinstance(res, list):
+        res = next((m for m in reversed(res) if m.get("type") == "result"), {})
+    if res.get("is_error"):
+        raise RuntimeError(f"claude error: {str(res.get('result'))[-400:]}")
+    data = res.get("structured_output")
+    if not data:
+        m = re.search(r"\{[\s\S]*\}", str(res.get("result", "")))
+        try:
+            data = json.loads(m.group(0)) if m else None
+        except json.JSONDecodeError:
+            data = None
+    return data, res
+
+
+def agent(name: str, prompt: str, cwd: Path) -> dict:
+    """Run one agent with `claude -p`, isolated from the user's settings, hooks, MCP servers and CLAUDE.md."""
+    schema = SCHEMAS[name]
+    full = f"{prompt}\n\n---\nEnd your answer with one JSON object (no code fence) matching this JSON Schema:\n{json.dumps(schema)}"
+    base = ["claude", "-p", "--output-format", "json", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence",
+            "--append-system-prompt", (AGENTS / f"{name}.md").read_text(), "--tools", TOOLS[name]]
+    if name == "builder":
+        base += ["--permission-mode", "acceptEdits"]
+    if ALLOW.get(name):
+        base += ["--allowedTools", *ALLOW[name]]
+    t0 = time.time()
+    p = run([*base, full], cwd=cwd, check=False, timeout=1800)
+    data, res = parse_result(p.stdout)
+    errs = schema_errors(schema, data) if data else ["no JSON"]
+    if errs:
+        log(f"{name}: answer did not match the schema ({'; '.join(errs)}), asking once more")
+        p = run([*base, f"{full}\n\nYour previous answer did not match the schema: {'; '.join(errs)}. Do the same work and answer "
+                        "again with only the JSON."], cwd=cwd, check=False, timeout=1800)
+        data, res = parse_result(p.stdout)
+        errs = schema_errors(schema, data) if data else ["no JSON"]
+        if errs:
+            raise RuntimeError(f"{name}: no valid answer: {'; '.join(errs)}")
+    log(f"{name}: {time.time() - t0:.0f}s, ${res.get('total_cost_usd', 0):.2f}")
+    return data
+
+
+# ---------- repo and sandbox ----------
+
+def checkout(repo: str, base_sha: str, branch: str, sid) -> Path:
+    mirror = WORK / "repos" / repo.replace("/", "__")
+    if not mirror.exists():
+        mirror.parent.mkdir(parents=True, exist_ok=True)
+        run(["git", "clone", "--quiet", f"https://github.com/{repo}.git", str(mirror)])
+    else:
+        run(["git", "fetch", "--quiet", "origin"], cwd=mirror)
+    wt = WORK / "builds" / f"{sid}-{datetime.now():%Y%m%d-%H%M%S}"
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    run(["git", "worktree", "add", "--quiet", "-B", branch, str(wt), base_sha], cwd=mirror)
+    return wt
+
+
+def changed_files(wt: Path, base_sha: str) -> list[str]:
+    tracked = run(["git", "diff", "--name-only", base_sha], cwd=wt).stdout.split()
+    untracked = run(["git", "ls-files", "--others", "--exclude-standard"], cwd=wt).stdout.split()
+    return sorted(set(tracked + untracked))
+
+
+def guard(wt: Path, base_sha: str) -> list[str]:
+    """Undo edits to protected or unexpected files. Returns what was undone."""
+    undone = []
+    for f in changed_files(wt, base_sha):
+        if PROTECTED.match(f) or not ALLOWED.match(f):
+            existed = run(["git", "cat-file", "-e", f"{base_sha}:{f}"], cwd=wt, check=False).returncode == 0
+            if existed:
+                run(["git", "checkout", base_sha, "--", f], cwd=wt)
+            else:
+                (wt / f).unlink(missing_ok=True)
+            undone.append(f)
+    return undone
+
+
+def gates(wt: Path) -> dict:
+    """Regenerate milestones.json and run all gates inside Docker: no network, limited CPU/memory/time."""
+    cmd = ["docker", "run", "--rm", "--network", "none", "--cpus", "2", "--memory", "1g", "--pids-limit", "256",
+           "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--user", f"{os.getuid()}:{os.getgid()}",
+           "-v", f"{wt}:/game", "-w", "/game", IMAGE, "sh", "-c",
+           "node -e \"import('./game/sim.js').then(m=>process.stdout.write(JSON.stringify(m.milestones,null,2)+'\\\\n'))\" "
+           "> milestones.json && node gates.mjs --json"]
+    try:
+        p = run(cmd, check=False, timeout=300)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "gates": [{"name": "sandbox", "ok": False, "log": "the checks took longer than 5 minutes"}]}
+    last = (p.stdout.strip().splitlines() or [""])[-1]
+    try:
+        return json.loads(last)
+    except json.JSONDecodeError:
+        return {"ok": False, "gates": [{"name": "sandbox", "ok": False, "log": (p.stderr or p.stdout)[-2000:]}]}
+
+
+def gate_feedback(g: dict) -> str:
+    return "\n\n".join(f"### {x['name']}\n{x.get('log', '')}" for x in g["gates"] if not x["ok"])
+
+
+def coauthor(login: str) -> str:
+    try:
+        uid = json.loads(run(["gh", "api", f"users/{login}"]).stdout)["id"]
+        return f"Co-authored-by: {login} <{uid}+{login}@users.noreply.github.com>"
+    except Exception:  # noqa: BLE001
+        return f"Co-authored-by: {login} <{login}@users.noreply.github.com>"
+
+
+# ---------- one build ----------
+
+def build(job: dict, push: bool = True) -> dict:
+    """Returns {"status": "done", "sha", "changelog", "branch"} | {"status": "rejected"|"failed", "reason"}."""
+    sid, author = job["suggestion"], job["author"]
+    branch = f"suggestion/{sid}-{re.sub(r'[^A-Za-z0-9-]', '', author)[:30]}"
+    wt = checkout(job["repo"], job["base_sha"], branch, sid)
+    constitution = (wt / "constitution.md").read_text()
+    idea = f"<player_idea author=\"@{author}\">\nWhat if {job['title']}\n{job.get('body', '')}\n</player_idea>"
+    log(f"#{sid} {job['repo']}@{job['base_sha'][:7]} on {branch}: what if {job['title']}")
+
+    empty = WORK / "empty"
+    empty.mkdir(parents=True, exist_ok=True)
+    c = agent("classifier", f"Game: {job.get('game_name', job['game'])}\n\nConstitution:\n{constitution}\n\n{idea}", empty)
+    if not c["accept"]:
+        log(f"#{sid} rejected by the classifier: {c['reason']}")
+        return {"status": "rejected", "reason": c["reason"]}
+
+    task = (f"Task (from the player's idea, already checked):\n{c['task']}\n\nOriginal idea, for its spirit only:\n{idea}\n\n"
+            f"Constitution:\n{constitution}")
+    feedback, built = "", None
+    for review in range(1, MAX_REVIEW_ROUNDS + 1):
+        g = None
+        for rnd in range(1, MAX_BUILD_ROUNDS + 1):
+            built = agent("builder", task + (f"\n\nFix this first:\n{feedback}" if feedback else ""), wt)
+            if built["status"] == "blocked":
+                return {"status": "rejected", "reason": built.get("blocked") or "This idea can't be built within the game's rules."}
+            undone = guard(wt, job["base_sha"])
+            g = gates(wt)
+            log(f"#{sid} build round {rnd}: gates {'green' if g['ok'] else 'red'}{f', undid {undone}' if undone else ''}")
+            if g["ok"] and not undone:
+                break
+            feedback = (f"These files may not be changed and were reset: {', '.join(undone)}.\n" if undone else "") + \
+                       (f"The checks failed:\n{gate_feedback(g)}" if not g["ok"] else "")
+        if not g or not g["ok"]:
+            return {"status": "failed", "reason": "The automatic checks kept failing.\n" + gate_feedback(g)[-400:]}
+        if not changed_files(wt, job["base_sha"]):
+            return {"status": "failed", "reason": "The builder made no changes."}
+
+        v = agent("reviewer", f"Base commit: {job['base_sha']}\n\n{task}\n\nBuilder summary: {built['summary']}\n"
+                              f"Changelog for players: {built['changelog']}", wt)
+        if v["approve"]:
+            break
+        feedback = "Code review blocked the change:\n" + "\n".join(f"- {b}" for b in v["blocking"])
+        log(f"#{sid} review {review} blocked")
+    else:
+        return {"status": "failed", "reason": "The review kept finding problems: " + "; ".join(v["blocking"])[:400]}
+
+    run(["git", "add", "-A"], cwd=wt)
+    msg = (f"What if {job['title']}\n\n{built['changelog']}\n\nSuggested by @{author} (Evolvia idea #{sid}). "
+           f"Built by the Evolvia AI builder, checked by the gates and an AI reviewer.\n\n{coauthor(author)}")
+    run(["git", "-c", "user.name=Evolvia builder", "-c", "user.email=evolvia@atabuilderslab.pl", "commit", "-q", "-m", msg], cwd=wt)
+    sha = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    if push:
+        run(["git", "push", "-q", "-u", "origin", branch], cwd=wt)
+    log(f"#{sid} done: {sha[:7]} on {branch}{' (pushed)' if push else ' (not pushed)'}")
+    return {"status": "done", "sha": sha, "changelog": built["changelog"], "branch": branch, "worktree": str(wt)}
+
+
+# ---------- platform loop ----------
+
+def api(method: str, path: str, **kw):
+    r = httpx.request(method, PLATFORM + path, headers={"Authorization": f"Bearer {TOKEN}"}, timeout=120, **kw)
+    r.raise_for_status()
+    return r.json()
+
+
+def run_loop(once: bool) -> None:
+    if not TOKEN:
+        sys.exit("EVOLVIA_WORKER_TOKEN is not set")
+    while True:
+        job = api("POST", "/api/worker/next")["job"]
+        if job:
+            try:
+                result = build(job)
+            except Exception as e:  # noqa: BLE001 — any crash is reported as a failed build
+                result = {"status": "failed", "reason": f"Builder crashed: {e}"[:500]}
+                log(f"#{job['suggestion']} crashed: {e}")
+            payload = {k: result[k] for k in ("status", "sha", "changelog") if k in result}
+            if "reason" in result:
+                payload["reason"] = result["reason"]
+            sid = job["suggestion"]
+            answer = api("POST", f"/api/worker/{sid}/result", json=payload)
+            log(f"#{sid} -> platform: {json.dumps(answer)}")
+        if once:
+            return
+        time.sleep(30 if not job else 1)
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(prog="evolvia-worker")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    r = sub.add_parser("run")
+    r.add_argument("--once", action="store_true")
+    t = sub.add_parser("try")
+    t.add_argument("--repo", required=True)
+    t.add_argument("--ref", default="main")
+    t.add_argument("--title", required=True)
+    t.add_argument("--body", default="")
+    t.add_argument("--author", default="pbrudny")
+    t.add_argument("--push", action="store_true")
+    args = p.parse_args()
+    if not shutil.which("docker") or not shutil.which("claude"):
+        sys.exit("needs docker and the claude CLI")
+    if args.cmd == "run":
+        run_loop(args.once)
+    else:
+        sha = run(["git", "ls-remote", f"https://github.com/{args.repo}.git", args.ref]).stdout.split()[0]
+        job = {"suggestion": f"try{datetime.now():%H%M%S}", "game": args.repo.split("/")[-1], "repo": args.repo, "base_sha": sha,
+               "title": args.title, "body": args.body, "author": args.author}
+        print(json.dumps(build(job, push=args.push), indent=2))
+
+
+if __name__ == "__main__":
+    main()

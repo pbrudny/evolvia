@@ -10,6 +10,7 @@ os.environ["BASE_URL"] = "http://platform.test"
 os.environ["PLAY_URL"] = "http://play.test"
 os.environ["GITHUB_CLIENT_ID"] = "test-client"
 os.environ["ADMIN_LOGINS"] = "boss"
+os.environ["WORKER_TOKEN"] = "worker-secret"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -150,3 +151,59 @@ def test_event_feed():
         assert t in types, t
     last = c.get("/api/events").json()[-1]["id"]
     assert c.get(f"/api/events?after={last}").json() == []
+
+
+# ---------- build pipeline: admin accepts, worker builds ----------
+
+W = {"Authorization": "Bearer worker-secret"}
+
+
+def test_build_flow(monkeypatch):
+    with db.connect() as conn:
+        sid = conn.execute("SELECT id FROM suggestions WHERE login = 'alice'").fetchone()["id"]
+    plain = TestClient(server.app, base_url="http://platform.test")
+    assert plain.post("/api/worker/next").status_code == 401                       # no token
+    assert plain.post("/api/worker/next", headers={"Authorization": "Bearer nope"}).status_code == 401
+    assert plain.post("/api/worker/next", headers=W).json() == {"job": None}       # nothing accepted yet
+
+    dave = client_as("dave", monkeypatch)
+    assert dave.post(f"/suggestions/{sid}/accept", follow_redirects=False).status_code == 403   # not an admin
+    boss = client_as("boss", monkeypatch)
+    assert boss.post(f"/suggestions/{sid}/accept", follow_redirects=False).status_code == 303
+
+    job = plain.post("/api/worker/next", headers=W).json()["job"]
+    assert job["suggestion"] == sid and job["repo"] == "pbrudny/evolvia-template" and job["author"] == "alice"
+    assert job["base_version"] == V0 and len(job["base_sha"]) == 42
+    assert plain.post("/api/worker/next", headers=W).json() == {"job": None}       # handed out once
+
+    installed = {}
+
+    def fake_install(game, repo, sha, **kw):
+        installed.update(game=game, repo=repo, sha=sha, **kw)
+        return f"{game}-{sha[:7]}"
+
+    monkeypatch.setattr(server, "install", fake_install)
+    r = plain.post(f"/api/worker/{sid}/result", headers=W, json={"status": "done", "sha": "c" * 40, "changelog": "Sparks drift slowly."})
+    assert r.json() == {"ok": True, "version": "spark-run-ccccccc"}
+    assert installed["parent"] == V0 and installed["credited_login"] == "alice" and installed["suggestion_id"] == sid
+    with db.connect() as conn:
+        row = conn.execute("SELECT status, result_version FROM suggestions WHERE id = ?", (sid,)).fetchone()
+    assert (row["status"], row["result_version"]) == ("live", "spark-run-ccccccc")
+    assert plain.post(f"/api/worker/{sid}/result", headers=W, json={"status": "done", "sha": "c" * 40}).status_code == 400
+
+    types = [e["type"] for e in plain.get("/api/events").json()]
+    for t in ("SuggestionAccepted", "BuildStarted", "BuildSucceeded"):
+        assert t in types, t
+
+
+def test_worker_can_reject_with_a_reason(monkeypatch):
+    with db.connect() as conn:
+        sid = conn.execute("INSERT INTO suggestions (game, base_version, login, title, created_at) VALUES (?, ?, ?, ?, ?)",
+                           (GAME, V0, "carol", "the game showed ads", db.now())).lastrowid
+    boss = client_as("boss", monkeypatch)
+    boss.post(f"/suggestions/{sid}/accept", follow_redirects=False)
+    plain = TestClient(server.app, base_url="http://platform.test")
+    assert plain.post("/api/worker/next", headers=W).json()["job"]["suggestion"] == sid
+    plain.post(f"/api/worker/{sid}/result", headers=W, json={"status": "rejected", "reason": "Ads break rule 5."})
+    page = boss.get(f"/g/{GAME}/v/{V0}").text
+    assert "Ads break rule 5." in page and "status-rejected" in page

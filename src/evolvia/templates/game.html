@@ -68,9 +68,15 @@
         {% if s.body %}<p>{{ s.body }}</p>{% endif %}
         <span class="muted">by @{{ s.login }} · on <code>{{ s.base_version }}</code></span>
       </div>
+      <div class="actions">
       {% if me and eligible and s.login != me and not s.voted and s.base_version == v.id %}
       <form method="post" action="/suggestions/{{ s.id }}/vote"><button class="small">Vote</button></form>
       {% elif s.voted %}<span class="pill">voted</span>{% endif %}
+      {% if is_admin %}
+      <form method="post" action="/suggestions/{{ s.id }}/accept"><button class="small">Build this</button></form>
+      <form method="post" action="/suggestions/{{ s.id }}/reject"><button class="small link">Reject</button></form>
+      {% endif %}
+      </div>
     </li>
     {% endfor %}
   </ul>
@@ -79,13 +85,36 @@
   {% endif %}
 </section>
 
+{% if builds %}
+<section>
+  <h2>Being built and done</h2>
+  <ul class="ideas">
+    {% for s in builds %}
+    <li>
+      <div class="votes">{{ s.votes }}</div>
+      <div class="idea">
+        <strong>What if {{ s.title }}</strong>
+        <span class="muted">by @{{ s.login }}</span>
+        {% if s.build_note %}<p>{{ s.build_note }}</p>{% endif %}
+        {% if s.result_version %}<a href="/g/{{ game.slug }}/v/{{ s.result_version }}">Play the new version ▶</a>{% endif %}
+      </div>
+      <div class="actions"><span class="pill status-{{ s.status }}">{{ s.status }}</span>
+      {% if is_admin and s.status == 'failed' %}<form method="post" action="/suggestions/{{ s.id }}/accept"><button class="small">Retry</button></form>{% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 <section>
   <h2>Versions</h2>
   <ul class="versions">
     {% for x in versions %}
     <li><a href="/g/{{ game.slug }}/v/{{ x.id }}"><code>{{ x.id }}</code></a>{% if x.id == game.main_version %} <span class="pill">main</span>{% endif %}
       <span class="muted">{{ x.created_at[:10] }}{% if x.parent %} · from <code>{{ x.parent }}</code>{% endif %}{% if x.credited_login %} · idea by @{{ x.credited_login }}{% endif %}</span>
-      {% if x.changelog %}<br><span>{{ x.changelog }}</span>{% endif %}</li>
+      {% if x.changelog %}<br><span>{{ x.changelog }}</span>{% endif %}
+      {% if is_admin and x.id != game.main_version %}<form class="inline" method="post" action="/g/{{ game.slug }}/v/{{ x.id }}/promote"><button class="small link">Make this the main version</button></form>{% endif %}</li>
     {% endfor %}
   </ul>
 </section>

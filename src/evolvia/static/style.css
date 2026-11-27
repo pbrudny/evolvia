@@ -58,3 +58,7 @@ form button { margin-top: 0.7rem; }
 footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 1.5rem 1rem 2rem; border-top: 1px solid var(--line); }
 .signin-card { aspect-ratio: 16 / 9; display: grid; place-content: center; justify-items: center; gap: 0.4rem; text-align: center; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 1.5rem; }
 .signin-card p { color: var(--muted); max-width: 28rem; }
+.actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.actions form, form.inline { margin: 0; display: inline; }
+.status-accepted, .status-building { background: rgba(255, 209, 102, 0.15); color: var(--warm); }
+.status-rejected, .status-failed { background: rgba(239, 71, 111, 0.15); color: #ef476f; }

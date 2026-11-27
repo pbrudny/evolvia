@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS suggestions (
     login TEXT NOT NULL,
     title TEXT NOT NULL,
     body TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'open',  -- open | building | live | rejected | expired
+    status TEXT NOT NULL DEFAULT 'open',  -- open | accepted | building | live | rejected | failed
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS votes (
@@ -89,9 +89,21 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+MIGRATIONS = [
+    # (table, column, definition) — added after the first deploy
+    ("suggestions", "build_note", "TEXT NOT NULL DEFAULT ''"),
+    ("suggestions", "result_version", "TEXT"),
+    ("suggestions", "updated_at", "TEXT"),
+]
+
+
 def init() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        for table, column, definition in MIGRATIONS:
+            cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def emit(conn: sqlite3.Connection, type_: str, actor: str, **data) -> None:

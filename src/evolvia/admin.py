@@ -31,6 +31,14 @@ def main() -> None:
     m = sub.add_parser("set-main")
     m.add_argument("--game", required=True)
     m.add_argument("--version", required=True)
+    r = sub.add_parser("set-repo")
+    r.add_argument("--game", required=True)
+    r.add_argument("--repo", required=True)
+    sg = sub.add_parser("add-suggestion", help="for testing the build pipeline")
+    sg.add_argument("--game", required=True)
+    sg.add_argument("--login", required=True)
+    sg.add_argument("--title", required=True)
+    sg.add_argument("--body", default="")
     sub.add_parser("list")
     args = p.parse_args()
     db.init()
@@ -56,6 +64,17 @@ def main() -> None:
     elif args.cmd == "set-main":
         set_main(args.game, args.version)
         print(f"{args.game} main = {args.version}")
+    elif args.cmd == "set-repo":
+        with db.connect() as conn:
+            conn.execute("UPDATE games SET repo = ? WHERE slug = ?", (args.repo, args.game))
+        print(f"{args.game} repo = {args.repo}")
+    elif args.cmd == "add-suggestion":
+        with db.connect() as conn:
+            g = conn.execute("SELECT * FROM games WHERE slug = ?", (args.game,)).fetchone()
+            sid = conn.execute("INSERT INTO suggestions (game, base_version, login, title, body, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                               (args.game, g["main_version"], args.login, args.title, args.body, db.now())).lastrowid
+            db.emit(conn, "SuggestionSubmitted", "admin", game=args.game, version=g["main_version"], suggestion=sid, title=args.title)
+        print(f"suggestion {sid}")
     else:
         with db.connect() as conn:
             for g in conn.execute("SELECT * FROM games"):

@@ -24,7 +24,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import db
-from .versions import version_dir
+from .versions import install, version_dir
 
 CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
@@ -33,6 +33,7 @@ PLAY_URL = os.environ.get("PLAY_URL", "http://localhost:8000").rstrip("/")
 PLAY_HOST = urlsplit(PLAY_URL).netloc
 ADMINS = {a.strip().lower() for a in os.environ.get("ADMIN_LOGINS", "").split(",") if a.strip()}
 SUGGESTIONS_PER_DAY = int(os.environ.get("SUGGESTIONS_PER_DAY", "1"))
+WORKER_TOKEN = os.environ.get("WORKER_TOKEN", "")
 SECRET = os.environ.get("SESSION_SECRET") or secrets.token_hex(32)
 # Only signed-in players get a play link: the game page is opened with a short-lived signed ticket.
 TICKETS = URLSafeTimedSerializer(SECRET, salt="play-ticket")
@@ -196,12 +197,17 @@ def game_version(request: Request, slug: str, vid: str):
             "FROM suggestions s WHERE s.game = ? AND s.status = 'open' ORDER BY votes DESC, s.id",
             (login or "", slug),
         ).fetchall()
+        builds = conn.execute(
+            "SELECT s.*, (SELECT COUNT(*) FROM votes WHERE suggestion = s.id) AS votes FROM suggestions s "
+            "WHERE s.game = ? AND s.status != 'open' ORDER BY COALESCE(s.updated_at, s.created_at) DESC LIMIT 20",
+            (slug,),
+        ).fetchall()
         versions = conn.execute("SELECT * FROM versions WHERE game = ? ORDER BY created_at DESC", (slug,)).fetchall()
         can = eligible(conn, login, vid)
         left = suggestions_left(conn, login) if login else 0
     return page(
         request, "game.html", game=game, v=v, milestones=json.loads(v["milestones"]), mine=mine,
-        suggestions=suggestions, versions=versions, eligible=can, left=left,
+        suggestions=suggestions, builds=builds, versions=versions, eligible=can, left=left,
         frame_src=f"{PLAY_URL}/v/{vid}/index.html?t={TICKETS.dumps(vid)}" if login else None, play_origin=PLAY_URL,
     )
 
@@ -349,6 +355,114 @@ def vote(request: Request, sid: int):
                         (sid, login, db.now())).rowcount:
             db.emit(conn, "SuggestionVoted", login, game=s["game"], suggestion=sid)
     return RedirectResponse(f"/g/{s['game']}/v/{s['base_version']}#suggestions", status_code=303)
+
+
+# ---------- building ideas: admin decides, the worker builds ----------
+
+def set_status(conn, sid: int, status: str, note: str = "", result_version: str | None = None):
+    conn.execute("UPDATE suggestions SET status = ?, build_note = ?, result_version = COALESCE(?, result_version), updated_at = ? "
+                 "WHERE id = ?", (status, note, result_version, db.now(), sid))
+
+
+@app.post("/suggestions/{sid}/accept")
+def accept(request: Request, sid: int):
+    login = need_login(request)
+    if not is_admin(login):
+        raise HTTPException(403)
+    with db.connect() as conn:
+        s = conn.execute("SELECT * FROM suggestions WHERE id = ?", (sid,)).fetchone()
+        if not s or s["status"] not in ("open", "failed"):
+            raise HTTPException(400, "Only open or failed ideas can be sent to the builder")
+        set_status(conn, sid, "accepted", "Waiting for the builder")
+        db.emit(conn, "SuggestionAccepted", login, game=s["game"], suggestion=sid, title=s["title"], author=s["login"])
+    return RedirectResponse(f"/g/{s['game']}/v/{s['base_version']}#suggestions", status_code=303)
+
+
+@app.post("/suggestions/{sid}/reject")
+def reject(request: Request, sid: int, reason: str = Form("")):
+    login = need_login(request)
+    if not is_admin(login):
+        raise HTTPException(403)
+    with db.connect() as conn:
+        s = conn.execute("SELECT * FROM suggestions WHERE id = ?", (sid,)).fetchone()
+        if not s:
+            raise HTTPException(404)
+        set_status(conn, sid, "rejected", reason.strip()[:300] or "Rejected by the course instructor")
+        db.emit(conn, "SuggestionRejected", login, game=s["game"], suggestion=sid, reason=reason.strip()[:300])
+    return RedirectResponse(f"/g/{s['game']}/v/{s['base_version']}#suggestions", status_code=303)
+
+
+def need_worker(request: Request):
+    auth = request.headers.get("authorization", "")
+    if not WORKER_TOKEN or not hmac.compare_digest(auth, f"Bearer {WORKER_TOKEN}"):
+        raise HTTPException(401)
+
+
+@app.post("/g/{slug}/v/{vid}/promote")
+def promote(request: Request, slug: str, vid: str):
+    login = need_login(request)
+    if not is_admin(login):
+        raise HTTPException(403)
+    with db.connect() as conn:
+        v = version_row(conn, vid)
+        if v["game"] != slug:
+            raise HTTPException(404)
+        conn.execute("UPDATE games SET main_version = ? WHERE slug = ?", (vid, slug))
+        db.emit(conn, "VersionPromoted", login, game=slug, version=vid)
+    return RedirectResponse(f"/g/{slug}/v/{vid}", status_code=303)
+
+
+@app.post("/api/worker/next")
+def worker_next(request: Request):
+    """Hand the oldest accepted idea to the build worker and mark it as building."""
+    need_worker(request)
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        s = conn.execute("SELECT * FROM suggestions WHERE status = 'accepted' ORDER BY updated_at, id LIMIT 1").fetchone()
+        if not s:
+            return {"job": None}
+        g = conn.execute("SELECT * FROM games WHERE slug = ?", (s["game"],)).fetchone()
+        v = version_row(conn, s["base_version"])
+        set_status(conn, s["id"], "building", "The AI builder is working on it")
+        db.emit(conn, "BuildStarted", "worker", game=s["game"], suggestion=s["id"], base_version=v["id"])
+    return {"job": {"suggestion": s["id"], "game": g["slug"], "game_name": g["name"], "repo": g["repo"],
+                    "base_version": v["id"], "base_sha": v["sha"], "title": s["title"], "body": s["body"], "author": s["login"]}}
+
+
+@app.post("/api/worker/{sid}/result")
+async def worker_result(request: Request, sid: int):
+    """status: done (sha + changelog) | rejected (reason shown to the player) | failed (reason)."""
+    need_worker(request)
+    body = await request.json()
+    status, note = body.get("status"), str(body.get("reason", ""))[:500]
+    with db.connect() as conn:
+        s = conn.execute("SELECT * FROM suggestions WHERE id = ?", (sid,)).fetchone()
+        if not s or s["status"] != "building":
+            raise HTTPException(400, "This idea is not being built")
+        g = conn.execute("SELECT * FROM games WHERE slug = ?", (s["game"],)).fetchone()
+        if status == "rejected":
+            set_status(conn, sid, "rejected", note)
+            db.emit(conn, "SuggestionRejected", "worker", game=s["game"], suggestion=sid, reason=note)
+            return {"ok": True}
+        if status == "failed":
+            set_status(conn, sid, "failed", note)
+            db.emit(conn, "BuildFailed", "worker", game=s["game"], suggestion=sid, reason=note)
+            return {"ok": True}
+        if status != "done":
+            raise HTTPException(400, "status must be done, rejected or failed")
+    sha, changelog = str(body.get("sha", "")), str(body.get("changelog", ""))[:1000]
+    try:
+        vid = install(s["game"], g["repo"], sha, parent=s["base_version"], changelog=changelog,
+                      credited_login=s["login"], suggestion_id=sid, actor="worker")
+    except Exception as e:  # noqa: BLE001 — report any install problem back to the worker
+        with db.connect() as conn:
+            set_status(conn, sid, "failed", f"Install failed: {e}"[:500])
+            db.emit(conn, "BuildFailed", "worker", game=s["game"], suggestion=sid, reason=str(e)[:300])
+        raise HTTPException(502, f"install failed: {e}")
+    with db.connect() as conn:
+        set_status(conn, sid, "live", changelog, result_version=vid)
+        db.emit(conn, "BuildSucceeded", "worker", game=s["game"], suggestion=sid, version=vid, author=s["login"])
+    return {"ok": True, "version": vid}
 
 
 # ---------- public event feed (for students' consumers) ----------
