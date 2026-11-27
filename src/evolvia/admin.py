@@ -39,6 +39,8 @@ def main() -> None:
     sg.add_argument("--login", required=True)
     sg.add_argument("--title", required=True)
     sg.add_argument("--body", default="")
+    ac = sub.add_parser("accept", help="send an idea to the build worker")
+    ac.add_argument("--suggestion", type=int, required=True)
     sub.add_parser("list")
     args = p.parse_args()
     db.init()
@@ -68,6 +70,15 @@ def main() -> None:
         with db.connect() as conn:
             conn.execute("UPDATE games SET repo = ? WHERE slug = ?", (args.repo, args.game))
         print(f"{args.game} repo = {args.repo}")
+    elif args.cmd == "accept":
+        with db.connect() as conn:
+            s = conn.execute("SELECT * FROM suggestions WHERE id = ?", (args.suggestion,)).fetchone()
+            if not s or s["status"] not in ("open", "failed"):
+                raise SystemExit("only open or failed ideas can be accepted")
+            conn.execute("UPDATE suggestions SET status = 'accepted', build_note = 'Waiting for the builder', updated_at = ? WHERE id = ?",
+                         (db.now(), args.suggestion))
+            db.emit(conn, "SuggestionAccepted", "admin", game=s["game"], suggestion=args.suggestion, title=s["title"], author=s["login"])
+        print(f"suggestion {args.suggestion} accepted")
     elif args.cmd == "add-suggestion":
         with db.connect() as conn:
             g = conn.execute("SELECT * FROM games WHERE slug = ?", (args.game,)).fetchone()

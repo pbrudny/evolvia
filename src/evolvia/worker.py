@@ -107,20 +107,24 @@ def agent(name: str, prompt: str, cwd: Path) -> dict:
     """Run one agent with `claude -p`, isolated from the user's settings, hooks, MCP servers and CLAUDE.md."""
     schema = SCHEMAS[name]
     full = f"{prompt}\n\n---\nEnd your answer with one JSON object (no code fence) matching this JSON Schema:\n{json.dumps(schema)}"
-    base = ["claude", "-p", "--output-format", "json", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence",
+    flags = ["--output-format", "json", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence",
             "--append-system-prompt", (AGENTS / f"{name}.md").read_text(), "--tools", TOOLS[name]]
     if name == "builder":
-        base += ["--permission-mode", "acceptEdits"]
+        flags += ["--permission-mode", "acceptEdits"]
     if ALLOW.get(name):
-        base += ["--allowedTools", *ALLOW[name]]
+        flags += ["--allowedTools", *ALLOW[name]]
+    # The prompt goes right after -p: --tools and --allowedTools take lists and would swallow a later prompt.
+    call = lambda text: run(["claude", "-p", text, *flags], cwd=cwd, check=False, timeout=1800)  # noqa: E731
     t0 = time.time()
-    p = run([*base, full], cwd=cwd, check=False, timeout=1800)
+    p = call(full)
+    if not p.stdout.strip():
+        raise RuntimeError(f"{name}: claude printed nothing: {p.stderr[-600:]}")
     data, res = parse_result(p.stdout)
     errs = schema_errors(schema, data) if data else ["no JSON"]
     if errs:
         log(f"{name}: answer did not match the schema ({'; '.join(errs)}), asking once more")
-        p = run([*base, f"{full}\n\nYour previous answer did not match the schema: {'; '.join(errs)}. Do the same work and answer "
-                        "again with only the JSON."], cwd=cwd, check=False, timeout=1800)
+        p = call(f"{full}\n\nYour previous answer did not match the schema: {'; '.join(errs)}. Do the same work and answer "
+                 "again with only the JSON.")
         data, res = parse_result(p.stdout)
         errs = schema_errors(schema, data) if data else ["no JSON"]
         if errs:
