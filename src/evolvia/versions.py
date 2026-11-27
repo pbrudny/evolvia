@@ -21,15 +21,15 @@ def version_dir(version_id: str):
 
 
 def download(repo: str, ref: str) -> tuple[str, bytes]:
-    """Download repo@ref as a tarball. Its top folder is "<repo>-<full sha>", which gives the exact commit
-    without the GitHub API (the API's anonymous rate limit is shared by every app on the server)."""
+    """Download repo@ref as a tarball. GitHub writes the exact commit id into the archive's pax header
+    ("comment"), so no GitHub API call is needed (its anonymous rate limit is shared by every app on the server)."""
     r = httpx.get(f"https://codeload.github.com/{repo}/tar.gz/{ref}", timeout=60, follow_redirects=True)
     r.raise_for_status()
     with tarfile.open(fileobj=io.BytesIO(r.content), mode="r:gz") as tar:
-        top = tar.getmembers()[0].name.split("/")[0]
-    sha = top.rsplit("-", 1)[-1]
+        tar.getmembers()
+        sha = (tar.pax_headers or {}).get("comment", "").strip()
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
-        raise ValueError(f"unexpected archive layout: {top}")
+        raise ValueError(f"could not read the commit id from the archive of {repo}@{ref}")
     return sha, r.content
 
 
