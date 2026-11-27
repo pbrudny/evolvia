@@ -114,3 +114,10 @@ table.xp td.neg { color: #ef476f; }
 .idea-form, .open-round form { max-width: 36rem; margin-bottom: 1rem; }
 .ideas .idea > span.muted { display: block; }
 .card .pill { justify-self: start; }
+
+/* Merges */
+.merge-bar { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; background: var(--panel); border: 1px dashed var(--line); border-radius: 10px; padding: 0.7rem 0.9rem; }
+.merge-bar button { margin: 0; }
+.pick { width: 1.1rem; height: 1.1rem; accent-color: var(--accent); margin: 0; }
+.merged code { color: var(--accent); }
+.status-queued, .status-live { background: rgba(6, 214, 160, 0.15); color: var(--accent); }

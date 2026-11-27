@@ -117,6 +117,17 @@ CREATE TABLE IF NOT EXISTS proto_votes (   -- one vote per player per round, for
     created_at TEXT NOT NULL,
     PRIMARY KEY (round, login)
 );
+CREATE TABLE IF NOT EXISTS merges (       -- several versions combined into one (Multiverse "Merge")
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game TEXT NOT NULL REFERENCES games(slug),
+    versions TEXT NOT NULL,           -- JSON list of version ids; the first is the base (the new version's parent)
+    login TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',  -- queued | building | live | failed
+    build_note TEXT NOT NULL DEFAULT '',
+    result_version TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     type TEXT NOT NULL,
@@ -149,6 +160,7 @@ MIGRATIONS = [
     ("votes", "weight", "INTEGER NOT NULL DEFAULT 1"),              # Curator: 2
     ("games", "kind", "TEXT NOT NULL DEFAULT 'game'"),             # game | prototype
     ("games", "round", "INTEGER"),                                  # prototypes: their round
+    ("versions", "merged_from", "TEXT"),                            # JSON list of version ids for merged versions
 ]
 
 

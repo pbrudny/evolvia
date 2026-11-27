@@ -64,6 +64,10 @@ Pages: `/p/<login>` (level, XP history, live ideas), `/g/<slug>/tree` (the Multi
 
 The worker calls `claude -p` with Piotr's claude.ai subscription login (`CLAUDE_CONFIG_DIR`, default `~/.claude`), never an API key: it removes `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` from the agents' environment and skips a poll unless `claude auth status` says `authMethod: claude.ai`. Builds count toward the subscription's usage limits; the dollar amounts in the log are estimates only.
 
+## Merging versions
+
+In the Multiverse (`/g/<slug>/tree`) an admin ticks 2–4 versions and clicks **Merge selected**. The worker merges their commits one by one on a branch `merge/<id>` (the first ticked version is the base and becomes the parent), the builder resolves conflicts with every version's changelog in hand, then the usual gates and reviewer run. The new version shows "Merged from …" in the tree, and its closing commit credits every idea's author with `Co-authored-by`. A failed merge can be retried.
+
 ## Idea rounds and prototype rounds
 
 `/rounds` (DESIGN.md §4.1–4.2). An admin or an Architect opens a round with two lengths: hours for ideas, hours to play and vote.

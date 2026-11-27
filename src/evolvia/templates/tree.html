@@ -4,12 +4,14 @@
 <li class="{{ 'mainline' if n.on_main_line }}">
   <div class="vcard{{ ' is-main' if n.id == game.main_version }}{{ ' is-here' if n.id == here }}">
     <div class="vhead">
+      {% if can_merge %}<input type="checkbox" class="pick" name="versions" value="{{ n.id }}" form="merge-form" aria-label="Pick {{ n.id }} to merge">{% endif %}
       <code>{{ n.id }}</code>
       {% if n.id == game.main_version %}<span class="pill">main</span>{% endif %}
       {% if n.id == here %}<span class="pill here">you were here</span>{% endif %}
       <span class="muted">{{ n.created_at[:10] }}</span>
     </div>
     <p>{{ n.changelog or ('The first version.' if not n.parent else 'No description.') }}</p>
+    {% if n.merged_from %}<p class="muted merged">Merged from {% for m in n.merged_from %}<a href="/g/{{ game.slug }}/v/{{ m }}"><code>{{ m }}</code></a>{{ ', ' if not loop.last }}{% endfor %}</p>{% endif %}
     <div class="vfoot">
       <span class="muted">{% if n.credited_login %}idea by <a href="https://github.com/{{ n.credited_login }}">@{{ n.credited_login }}</a> · {% endif %}{{ n.players }} player{{ '' if n.players == 1 else 's' }} · {{ n.finishers }} reached a milestone</span>
       <span class="actions">
@@ -27,6 +29,32 @@
   <p class="muted">{{ count }} version{{ '' if count == 1 else 's' }}. Every idea that was built is a branch, and every branch stays playable. The highlighted line leads to the main version, the one new players get.</p>
   <p><a href="/g/{{ game.slug }}">◀ Back to the main version</a></p>
 </div>
+{% if can_merge %}
+<form id="merge-form" class="merge-bar" method="post" action="/g/{{ game.slug }}/merge">
+  <span>Tick 2 to 4 versions, then</span> <button class="small">Merge selected</button>
+  <span class="muted">The AI builder combines them into one version that keeps every feature. The first ticked version (from the top) is the base.</span>
+</form>
+{% endif %}
+{% if merges %}
+<section id="merges">
+  <h2>Merges</h2>
+  <ul class="ideas">
+    {% for m in merges %}
+    <li>
+      <div class="votes">⑂</div>
+      <div class="idea">
+        <strong>{% for x in m.versions %}<code>{{ x }}</code>{{ ' + ' if not loop.last }}{% endfor %}</strong>
+        <p class="note">{% if m.status in ('queued', 'building') %}<span class="spinner" aria-hidden="true"></span>{% endif %}{{ m.build_note }}</p>
+        {% if m.result_version %}<a href="/g/{{ game.slug }}/v/{{ m.result_version }}">Play the merged version ▶</a>{% endif %}
+      </div>
+      <div class="actions"><span class="pill status-{{ m.status }}">{{ m.status }}</span>
+        {% if can_merge and m.status == 'failed' %}<form method="post" action="/merges/{{ m.id }}/retry"><button class="small">Retry</button></form>{% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
 {% if roots %}
 <ul class="tree">{% for r in roots %}{{ node(r) }}{% endfor %}</ul>
 {% else %}

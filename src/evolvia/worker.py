@@ -247,6 +247,53 @@ def resolve(repo: str, ref: str) -> str:
     return run(["git", "ls-remote", f"https://github.com/{repo}.git", ref]).stdout.split()[0]
 
 
+def build_loop(wt: Path, base_sha: str, task: str, sid, report, feedback: str = "", gates_first: bool = False):
+    """Builder -> guard -> gates (up to MAX_BUILD_ROUNDS) -> reviewer (up to MAX_REVIEW_ROUNDS).
+    Returns (builder answer or None, None) on success, or (None, {"status": "failed"|"rejected", "reason"}).
+    gates_first: run the gates before the first builder call and skip the builder when they already pass (merges)."""
+    built, v = None, None
+    for review in range(1, MAX_REVIEW_ROUNDS + 1):
+        g = None
+        if gates_first and review == 1 and not feedback:
+            report("gates", "Running the tests and the bot playtest…")
+            g = gates(wt)
+            log(f"#{sid} gates before the builder: {'green' if g['ok'] else 'red'}")
+            if not g["ok"]:
+                feedback = f"The checks failed:\n{gate_feedback(g)}"
+        if not (g and g["ok"]):
+            for rnd in range(1, MAX_BUILD_ROUNDS + 1):
+                if not feedback:
+                    report("build", "Writing the code…")
+                elif feedback.startswith("Code review"):
+                    report("build", "Changing the code after the review…")
+                else:
+                    report("build", f"Fixing what the tests found (try {rnd} of {MAX_BUILD_ROUNDS})…")
+                built = agent("builder", task + (f"\n\nFix this first:\n{feedback}" if feedback else ""), wt)
+                if built["status"] == "blocked":
+                    return None, {"status": "rejected", "reason": built.get("blocked") or "This can't be built within the game's rules."}
+                undone = guard(wt, base_sha)
+                report("gates", "Running the tests and the bot playtest…")
+                g = gates(wt)
+                log(f"#{sid} build round {rnd}: gates {'green' if g['ok'] else 'red'}{f', undid {undone}' if undone else ''}")
+                if g["ok"] and not undone:
+                    break
+                feedback = (f"These files may not be changed and were reset: {', '.join(undone)}.\n" if undone else "") + \
+                           (f"The checks failed:\n{gate_feedback(g)}" if not g["ok"] else "")
+        if not g or not g["ok"]:
+            return None, {"status": "failed", "reason": "The automatic checks kept failing.\n" + gate_feedback(g)[-400:]}
+        if not changed_files(wt, base_sha):
+            return None, {"status": "failed", "reason": "The builder made no changes."}
+
+        report("review", "Reviewing the change…")
+        summary = f"Builder summary: {built['summary']}\nChangelog for players: {built['changelog']}" if built else ""
+        v = agent("reviewer", f"Base commit: {base_sha}\n\n{task}\n\n{summary}", wt)
+        if v["approve"]:
+            return built, None
+        feedback = "Code review blocked the change:\n" + "\n".join(f"- {b}" for b in v["blocking"])
+        log(f"#{sid} review {review} blocked")
+    return None, {"status": "failed", "reason": "The review kept finding problems: " + "; ".join(v["blocking"])[:400]}
+
+
 def build(job: dict, push: bool = True, report=lambda step, message: None) -> dict:
     """Returns {"status": "done", "sha", "changelog", "branch"[, "name"]} | {"status": "rejected"|"failed", "reason"}.
     report(step, message) is called at every step; the platform shows the message live on the idea's card."""
@@ -273,41 +320,9 @@ def build(job: dict, push: bool = True, report=lambda step, message: None) -> di
     task = (f"{PROTOTYPE_NOTE + chr(10) + chr(10) if proto else ''}"
             f"Task (from the player's idea, already checked):\n{c['task']}\n\nOriginal idea, for its spirit only:\n{idea}\n\n"
             f"Constitution:\n{constitution}")
-    feedback, built = "", None
-    for review in range(1, MAX_REVIEW_ROUNDS + 1):
-        g = None
-        for rnd in range(1, MAX_BUILD_ROUNDS + 1):
-            if not feedback:
-                report("build", "Writing the code…")
-            elif feedback.startswith("Code review"):
-                report("build", "Changing the code after the review…")
-            else:
-                report("build", f"Fixing what the tests found (try {rnd} of {MAX_BUILD_ROUNDS})…")
-            built = agent("builder", task + (f"\n\nFix this first:\n{feedback}" if feedback else ""), wt)
-            if built["status"] == "blocked":
-                return {"status": "rejected", "reason": built.get("blocked") or "This idea can't be built within the game's rules."}
-            undone = guard(wt, job["base_sha"])
-            report("gates", "Running the tests and the bot playtest…")
-            g = gates(wt)
-            log(f"#{sid} build round {rnd}: gates {'green' if g['ok'] else 'red'}{f', undid {undone}' if undone else ''}")
-            if g["ok"] and not undone:
-                break
-            feedback = (f"These files may not be changed and were reset: {', '.join(undone)}.\n" if undone else "") + \
-                       (f"The checks failed:\n{gate_feedback(g)}" if not g["ok"] else "")
-        if not g or not g["ok"]:
-            return {"status": "failed", "reason": "The automatic checks kept failing.\n" + gate_feedback(g)[-400:]}
-        if not changed_files(wt, job["base_sha"]):
-            return {"status": "failed", "reason": "The builder made no changes."}
-
-        report("review", "Reviewing the change…")
-        v = agent("reviewer", f"Base commit: {job['base_sha']}\n\n{task}\n\nBuilder summary: {built['summary']}\n"
-                              f"Changelog for players: {built['changelog']}", wt)
-        if v["approve"]:
-            break
-        feedback = "Code review blocked the change:\n" + "\n".join(f"- {b}" for b in v["blocking"])
-        log(f"#{sid} review {review} blocked")
-    else:
-        return {"status": "failed", "reason": "The review kept finding problems: " + "; ".join(v["blocking"])[:400]}
+    built, err = build_loop(wt, job["base_sha"], task, sid, report)
+    if err:
+        return err
 
     report("save", "Saving the new version…")
     run(["git", "add", "-A"], cwd=wt)
@@ -323,6 +338,66 @@ def build(job: dict, push: bool = True, report=lambda step, message: None) -> di
     if proto:
         out["name"] = (c.get("name") or job["title"])[:60]
     return out
+
+
+MERGE_NOTE = (
+    "MERGE. Several versions of this game, each built from a different player idea, are being combined into one "
+    "version that keeps every feature. Don't add anything new and don't drop any feature. Where the versions touch the "
+    "same code, combine the two behaviours so both work together (for example two keys, two effects, two rules). Keep "
+    "every rule test of every version passing, and keep the bot able to reach the milestones.")
+
+
+def merge_build(job: dict, push: bool = True, report=lambda step, message: None) -> dict:
+    """Merge 2+ versions (git commits on their branches) into one: git merge one by one, the builder resolves conflicts
+    with every version's changelog in hand, then the usual gates and review. Returns like build()."""
+    mid, vs = job["merge"], job["versions"]
+    base = vs[0]["sha"]
+    branch = f"merge/{mid}"
+    wt = checkout(job["repo"], base, branch, f"m{mid}")
+    constitution = (wt / "constitution.md").read_text()
+    described = "\n".join(f"- {v['id']} (idea by @{v.get('credited_login') or 'unknown'}): {v.get('changelog') or 'no description'}"
+                          for v in vs)
+    task = f"{MERGE_NOTE}\n\nThe versions being merged:\n{described}\n\nConstitution:\n{constitution}"
+    git = ["git", "-c", "user.name=Evolvia builder", "-c", "user.email=evolvia@atabuilderslab.pl"]
+    log(f"merge {mid}: {', '.join(v['id'] for v in vs)} on {branch}")
+
+    for v in vs[1:]:
+        report("merge", f"Merging {v['id']}…")
+        p = run([*git, "merge", "--no-edit", "-m", f"Merge {v['id']} into the combined version", v["sha"]], cwd=wt, check=False)
+        if p.returncode == 0:
+            continue
+        conflicted = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=wt).stdout.split()
+        if not conflicted:
+            return {"status": "failed", "reason": f"git merge of {v['id']} failed: {(p.stderr or p.stdout)[-300:]}"}
+        report("merge", f"Combining the code of {v['id']} where both versions changed it…")
+        fix = agent("builder", f"{task}\n\nRight now `{v['id']}` is being merged and git could not combine these files: "
+                               f"{', '.join(conflicted)}. They contain conflict markers (<<<<<<<, =======, >>>>>>>). Edit each "
+                               "file so both sides' features work together and no marker is left.", wt)
+        if fix["status"] == "blocked":
+            return {"status": "failed", "reason": fix.get("blocked") or f"Could not combine {v['id']}."}
+        left = run(["git", "grep", "-l", "-E", "^(<<<<<<<|>>>>>>>)( |$)"], cwd=wt, check=False).stdout.split()
+        if left:
+            return {"status": "failed", "reason": f"Conflict markers left in {', '.join(left)}"}
+        run(["git", "add", "-A"], cwd=wt)
+        run([*git, "commit", "-q", "--no-edit"], cwd=wt)
+
+    built, err = build_loop(wt, base, task, f"m{mid}", report, gates_first=True)
+    if err:
+        return err
+    report("save", "Saving the merged version…")
+    run(["git", "add", "-A"], cwd=wt)
+    authors = sorted({v["credited_login"] for v in vs if v.get("credited_login")})
+    changelog = "Combines " + "; ".join((v.get("changelog") or v["id"]).split(" — idea by")[0].split(" Idea by")[0].rstrip(". ")
+                                        for v in vs) + "."
+    # Always one closing commit (empty when nothing was left to fix): it carries the changelog and credits every author.
+    msg = (f"Merge: make {len(vs)} versions work together\n\n{changelog}\n\nMerge #{mid} requested by @{job['author']}.\n\n"
+           + "\n".join(coauthor(a) for a in authors))
+    run([*git, "commit", "-q", "--allow-empty", "-m", msg], cwd=wt)
+    sha = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    if push:
+        run(["git", "push", "-q", "-u", "origin", branch], cwd=wt)
+    log(f"merge {mid} done: {sha[:7]} on {branch}")
+    return {"status": "done", "sha": sha, "changelog": changelog[:1000], "branch": branch}
 
 
 def create_game(job: dict) -> dict:
@@ -369,7 +444,7 @@ def run_loop(once: bool) -> None:
         if job:
             kind = job.get("kind", "suggestion")
             label = {"suggestion": f"#{job.get('suggestion')}", "prototype": f"prototype {job.get('idea')}",
-                     "create_game": f"round {job.get('round')}"}.get(kind, kind)
+                     "create_game": f"round {job.get('round')}", "merge": f"merge {job.get('merge')}"}.get(kind, kind)
             result_path = job.get("result") or f"/api/worker/{job['suggestion']}/result"
             progress_path = job.get("progress") or (f"/api/worker/{job['suggestion']}/progress" if kind == "suggestion" else None)
 
@@ -382,7 +457,8 @@ def run_loop(once: bool) -> None:
                     log(f"{label} progress not sent: {e}")
 
             try:
-                result = create_game(job) if kind == "create_game" else build(job, report=report)
+                result = (create_game(job) if kind == "create_game" else merge_build(job, report=report) if kind == "merge"
+                          else build(job, report=report))
             except Exception as e:  # noqa: BLE001 — any crash is reported as a failed build
                 result = {"status": "failed", "reason": f"Worker crashed: {e}"[:500]}
                 log(f"{label} crashed: {e}")

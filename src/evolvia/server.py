@@ -244,7 +244,8 @@ def version_tree(conn, slug: str, main: str | None) -> list[dict]:
         "(SELECT COUNT(DISTINCT login) FROM sessions WHERE version = v.id) AS players, "
         "(SELECT COUNT(DISTINCT login) FROM milestones WHERE version = v.id) AS finishers "
         "FROM versions v WHERE v.game = ? ORDER BY v.created_at, v.id", (slug,)).fetchall()
-    nodes = {r["id"]: {**dict(r), "children": [], "on_main_line": False} for r in rows}
+    nodes = {r["id"]: {**dict(r), "children": [], "on_main_line": False,
+                       "merged_from": json.loads(r["merged_from"]) if r["merged_from"] else []} for r in rows}
     roots = []
     for n in nodes.values():
         (nodes[n["parent"]]["children"] if n["parent"] in nodes else roots).append(n)
@@ -264,7 +265,103 @@ def game_tree(request: Request, slug: str, here: str = ""):
             raise HTTPException(404, "No such game")
         roots = version_tree(conn, slug, game["main_version"])
         count = conn.execute("SELECT COUNT(*) FROM versions WHERE game = ?", (slug,)).fetchone()[0]
-    return page(request, "tree.html", game=game, roots=roots, count=count, here=here)
+        merges = [{**dict(m), "versions": json.loads(m["versions"])} for m in conn.execute(
+            "SELECT * FROM merges WHERE game = ? ORDER BY id DESC LIMIT 10", (slug,))]
+    return page(request, "tree.html", game=game, roots=roots, count=count, here=here, merges=merges,
+                can_merge=is_admin(me(request)))
+
+
+MERGE_MAX = 4
+
+
+@app.post("/g/{slug}/merge")
+async def merge_request(request: Request, slug: str):
+    """Admin: combine 2-4 versions into one. The first ticked version (in tree order) is the base."""
+    login = need_login(request)
+    if not is_admin(login):
+        raise HTTPException(403)
+    form = await request.form()
+    picked = list(dict.fromkeys(str(v) for v in form.getlist("versions")))
+    if not 2 <= len(picked) <= MERGE_MAX:
+        raise HTTPException(400, f"Tick 2 to {MERGE_MAX} versions to merge")
+    with db.connect() as conn:
+        rows = {r["id"]: r for r in conn.execute(
+            f"SELECT * FROM versions WHERE game = ? AND id IN ({','.join('?' * len(picked))})", (slug, *picked))}
+        if len(rows) != len(picked):
+            raise HTTPException(404, "Unknown version")
+        mid = conn.execute("INSERT INTO merges (game, versions, login, build_note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                           (slug, json.dumps(picked), login, "Waiting for the builder", db.now(), db.now())).lastrowid
+        db.emit(conn, "MergeRequested", login, game=slug, merge=mid, versions=picked)
+    return RedirectResponse(f"/g/{slug}/tree#merges", status_code=303)
+
+
+def merge_job(conn) -> dict | None:
+    m = conn.execute("SELECT * FROM merges WHERE status = 'queued' ORDER BY id LIMIT 1").fetchone()
+    if not m:
+        return None
+    g = conn.execute("SELECT * FROM games WHERE slug = ?", (m["game"],)).fetchone()
+    vs = [dict(version_row(conn, vid)) for vid in json.loads(m["versions"])]
+    conn.execute("UPDATE merges SET status = 'building', build_note = 'The AI builder is merging', updated_at = ? WHERE id = ?",
+                 (db.now(), m["id"]))
+    db.emit(conn, "BuildStarted", "worker", game=m["game"], merge=m["id"])
+    return {"kind": "merge", "merge": m["id"], "game": g["slug"], "game_name": g["name"], "repo": g["repo"], "author": m["login"],
+            "versions": [{k: v[k] for k in ("id", "sha", "changelog", "credited_login")} for v in vs],
+            "progress": f"/api/worker/merges/{m['id']}/progress", "result": f"/api/worker/merges/{m['id']}/result"}
+
+
+@app.post("/api/worker/merges/{mid}/progress")
+async def merge_progress(request: Request, mid: int):
+    need_worker(request)
+    message = str((await request.json()).get("message", ""))[:200]
+    with db.connect() as conn:
+        if conn.execute("UPDATE merges SET build_note = ?, updated_at = ? WHERE id = ? AND status = 'building'",
+                        (message, db.now(), mid)).rowcount == 0:
+            raise HTTPException(400, "This merge is not being built")
+    return {"ok": True}
+
+
+@app.post("/api/worker/merges/{mid}/result")
+async def merge_result(request: Request, mid: int):
+    need_worker(request)
+    body = await request.json()
+    with db.connect() as conn:
+        m = conn.execute("SELECT * FROM merges WHERE id = ?", (mid,)).fetchone()
+        if not m or m["status"] != "building":
+            raise HTTPException(400, "This merge is not being built")
+        g = conn.execute("SELECT * FROM games WHERE slug = ?", (m["game"],)).fetchone()
+        if body.get("status") != "done":
+            note = str(body.get("reason", ""))[:500] or "The merge failed"
+            conn.execute("UPDATE merges SET status = 'failed', build_note = ?, updated_at = ? WHERE id = ?", (note, db.now(), mid))
+            db.emit(conn, "BuildFailed", "worker", game=m["game"], merge=mid, reason=note)
+            return {"ok": True}
+    versions = json.loads(m["versions"])
+    try:
+        vid = install(m["game"], g["repo"], str(body.get("sha", "")), parent=versions[0],
+                      changelog=str(body.get("changelog", ""))[:1000], actor="worker")
+    except Exception as e:  # noqa: BLE001
+        with db.connect() as conn:
+            conn.execute("UPDATE merges SET status = 'failed', build_note = ?, updated_at = ? WHERE id = ?",
+                         (f"Install failed: {e}"[:500], db.now(), mid))
+        raise HTTPException(502, f"install failed: {e}")
+    with db.connect() as conn:
+        conn.execute("UPDATE versions SET merged_from = ? WHERE id = ?", (json.dumps(versions), vid))
+        conn.execute("UPDATE merges SET status = 'live', result_version = ?, build_note = ?, updated_at = ? WHERE id = ?",
+                     (vid, str(body.get("changelog", ""))[:500], db.now(), mid))
+        db.emit(conn, "VersionsMerged", "worker", game=m["game"], merge=mid, version=vid, versions=versions)
+    return {"ok": True, "version": vid}
+
+
+@app.post("/merges/{mid}/retry")
+def merge_retry(request: Request, mid: int):
+    if not is_admin(me(request)):
+        raise HTTPException(403)
+    with db.connect() as conn:
+        m = conn.execute("SELECT * FROM merges WHERE id = ?", (mid,)).fetchone()
+        if not m or m["status"] != "failed":
+            raise HTTPException(400, "Only failed merges can be retried")
+        conn.execute("UPDATE merges SET status = 'queued', build_note = 'Waiting for the builder', updated_at = ? WHERE id = ?",
+                     (db.now(), mid))
+    return RedirectResponse(f"/g/{m['game']}/tree#merges", status_code=303)
 
 
 # ---------- login ----------
@@ -514,6 +611,9 @@ def worker_next(request: Request):
             return {"job": job}
         s = conn.execute("SELECT * FROM suggestions WHERE status = 'accepted' ORDER BY updated_at, id LIMIT 1").fetchone()
         if not s:
+            job = merge_job(conn)
+            if job:
+                return {"job": job}
             s = auto_pick(conn)
         if not s:
             return {"job": None}

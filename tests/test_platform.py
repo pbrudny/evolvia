@@ -454,3 +454,35 @@ def jack_votes(monkeypatch, rid, idea):
 def xp_history(login):
     with db.connect() as conn:
         return [dict(r) for r in conn.execute("SELECT * FROM xp WHERE login = ?", (login,))]
+
+
+# ---------- merges ----------
+
+def test_merge_versions(monkeypatch):
+    with db.connect() as conn:   # nothing else waiting for the worker
+        conn.execute("UPDATE suggestions SET status = 'live' WHERE status IN ('open', 'accepted', 'building')")
+        conn.execute("UPDATE ideas SET status = 'open' WHERE status IN ('queued', 'building')")
+        conn.execute("UPDATE rounds SET status = 'closed'")
+    plain = TestClient(server.app, base_url="http://platform.test")
+    dave = client_as("dave", monkeypatch)
+    assert dave.post(f"/g/{GAME}/merge", data={"versions": [V0, V1]}, follow_redirects=False).status_code == 403
+    boss = client_as("boss", monkeypatch)
+    assert "Merge selected" in boss.get(f"/g/{GAME}/tree").text and "Merge selected" not in dave.get(f"/g/{GAME}/tree").text
+    assert boss.post(f"/g/{GAME}/merge", data={"versions": [V1]}, follow_redirects=False).status_code == 400   # one only
+    assert boss.post(f"/g/{GAME}/merge", data={"versions": [V1, "nope"]}, follow_redirects=False).status_code == 404
+    assert boss.post(f"/g/{GAME}/merge", data={"versions": [V1, V0]}, follow_redirects=False).status_code == 303
+
+    job = plain.post("/api/worker/next", headers=W).json()["job"]
+    assert job["kind"] == "merge" and [v["id"] for v in job["versions"]] == [V1, V0] and job["repo"] == "pbrudny/evolvia-template"
+    assert plain.post("/api/worker/next", headers=W).json()["job"] is None
+    assert plain.post(job["progress"], headers=W, json={"message": "Merging…"}).json() == {"ok": True}
+    monkeypatch.setattr(server, "install", fake_install_into_db)
+    r = plain.post(job["result"], headers=W, json={"status": "done", "sha": "e" * 40, "changelog": "Combines A; B."})
+    vid = r.json()["version"]
+    with db.connect() as conn:
+        v = conn.execute("SELECT * FROM versions WHERE id = ?", (vid,)).fetchone()
+        m = conn.execute("SELECT * FROM merges WHERE id = ?", (job["merge"],)).fetchone()
+    assert json.loads(v["merged_from"]) == [V1, V0] and (m["status"], m["result_version"]) == ("live", vid)
+    page = boss.get(f"/g/{GAME}/tree").text
+    assert "Merged from" in page and "Play the merged version" in page
+    assert "VersionsMerged" in [e["type"] for e in plain.get("/api/events").json()]
