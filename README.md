@@ -60,6 +60,17 @@ Current XP loses 20% per month, lifetime XP never does. The level comes from cur
 
 Pages: `/p/<login>` (level, XP history, live ideas), `/g/<slug>/tree` (the Multiverse). Admins: `/admin/xp.csv` (login, name, level, current, lifetime, live ideas, confirmed bugs). Names come from an optional `DATA_DIR/roster.json` (`{"github-login": "Student Name"}`).
 
+### Where the worker runs
+
+On **omarchy** (always on), as a systemd user timer every 2 minutes: `~/.config/systemd/user/evolvia-worker.{service,timer}`. Each run first does `git pull --ff-only` in `~/agenty/evolvia` (so pushed worker code is picked up), then `with-secrets --only EVOLVIA_WORKER_TOKEN 'uv run evolvia-worker run --once'` (Slack announcer, then one build job). Log: `~/agenty/evolvia/logs/worker.log`; Slack cursor: `~/.evolvia-worker/slack.json`. It uses omarchy's own `claude` login (Pro subscription), `gh` login and Docker.
+
+```bash
+ssh omarchy 'systemctl --user list-timers evolvia-worker.timer; tail -f ~/agenty/evolvia/logs/worker.log'
+ssh omarchy 'systemctl --user stop evolvia-worker.timer'    # pause the worker
+```
+
+Run only one worker at a time with the Slack announcer (each has its own cursor). The old Mac launchd job `com.pbrudny.evolvia-worker` is stopped.
+
 ### Runs on the Claude subscription
 
 The worker calls `claude -p` with Piotr's claude.ai subscription login (`CLAUDE_CONFIG_DIR`, default `~/.claude`), never an API key: it removes `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` from the agents' environment and skips a poll unless `claude auth status` says `authMethod: claude.ai`. Builds count toward the subscription's usage limits; the dollar amounts in the log are estimates only.
