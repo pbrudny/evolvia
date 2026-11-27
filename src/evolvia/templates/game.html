@@ -86,18 +86,17 @@
   {% endif %}
 </section>
 
-{% if builds %}
-<section>
+<section id="builds" {% if not builds %}hidden{% endif %} data-game="{{ game.slug }}">
   <h2>Being built and done</h2>
   <ul class="ideas">
     {% for s in builds %}
-    <li>
+    <li data-build="{{ s.id }}">
       <div class="votes">{{ s.votes }}</div>
       <div class="idea">
         <strong>What if {{ s.title }}</strong>
         <span class="muted">by @{{ s.login }}</span>
-        {% if s.build_note %}<p>{{ s.build_note }}</p>{% endif %}
-        {% if s.result_version %}<a href="/g/{{ game.slug }}/v/{{ s.result_version }}">Play the new version ▶</a>{% endif %}
+        <p class="note">{% if s.status in ('accepted', 'building') %}<span class="spinner" aria-hidden="true"></span>{% endif %}{{ s.build_note }}</p>
+        <a class="new-version" href="/g/{{ game.slug }}/v/{{ s.result_version or '' }}" {% if not s.result_version %}hidden{% endif %}>Play the new version ▶</a>
       </div>
       <div class="actions"><span class="pill status-{{ s.status }}">{{ s.status }}</span>
       {% if is_admin and s.status == 'failed' %}<form method="post" action="/suggestions/{{ s.id }}/accept"><button class="small">Retry</button></form>{% endif %}
@@ -106,7 +105,6 @@
     {% endfor %}
   </ul>
 </section>
-{% endif %}
 
 <section>
   <h2>Versions</h2>
@@ -120,4 +118,4 @@
   </ul>
 </section>
 {% endblock %}
-{% block scripts %}<script src="/static/game.js"></script>{% endblock %}
+{% block scripts %}<script src="/static/game.js"></script><script src="/static/builds.js"></script>{% endblock %}

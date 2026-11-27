@@ -62,3 +62,7 @@ footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 1
 .actions form, form.inline { margin: 0; display: inline; }
 .status-accepted, .status-building { background: rgba(255, 209, 102, 0.15); color: var(--warm); }
 .status-rejected, .status-failed { background: rgba(239, 71, 111, 0.15); color: #ef476f; }
+.note { margin: 0.3rem 0; }
+.spinner { display: inline-block; width: 0.8em; height: 0.8em; margin-right: 0.45em; border: 2px solid var(--warm); border-right-color: transparent; border-radius: 50%; animation: spin 0.9s linear infinite; vertical-align: -0.05em; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }

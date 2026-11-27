@@ -229,3 +229,24 @@ def test_claude_picks_the_top_voted_idea(monkeypatch):
     with db.connect() as conn:
         conn.execute("INSERT INTO votes VALUES (?, 'x2', ?)", (low, db.now()))
     assert plain.post("/api/worker/next", headers=W).json() == {"job": None}
+
+
+def test_build_progress_is_shown_live(monkeypatch):
+    with db.connect() as conn:
+        conn.execute("UPDATE suggestions SET status = 'live' WHERE status IN ('open', 'accepted', 'building')")
+        sid = conn.execute("INSERT INTO suggestions (game, base_version, login, title, created_at) VALUES (?, ?, ?, ?, ?)",
+                           (GAME, V0, "carol", "spiders instead of balls", db.now())).lastrowid
+    boss = client_as("boss", monkeypatch)
+    boss.post(f"/suggestions/{sid}/accept", follow_redirects=False)
+    plain = TestClient(server.app, base_url="http://platform.test")
+    r = plain.post(f"/api/worker/{sid}/progress", headers=W, json={"step": "x", "message": "y"})
+    assert r.status_code == 400  # not building yet
+    plain.post("/api/worker/next", headers=W)
+    assert plain.post(f"/api/worker/{sid}/progress", json={"step": "build", "message": "hi"}).status_code == 401       # no token
+    r = plain.post(f"/api/worker/{sid}/progress", headers=W, json={"step": "build", "message": "Writing the code…"})
+    assert r.json() == {"ok": True}
+    row = next(b for b in plain.get(f"/api/games/{GAME}/builds").json() if b["id"] == sid)
+    assert row["status"] == "building" and row["build_note"] == "Writing the code…"
+    assert any(e["type"] == "BuildProgress" and e["data"]["message"] == "Writing the code…" for e in plain.get("/api/events").json())
+    page = boss.get(f"/g/{GAME}/v/{V0}").text
+    assert f'data-build="{sid}"' in page and "/static/builds.js" in page

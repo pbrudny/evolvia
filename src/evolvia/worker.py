@@ -200,8 +200,9 @@ def coauthor(login: str) -> str:
 
 # ---------- one build ----------
 
-def build(job: dict, push: bool = True) -> dict:
-    """Returns {"status": "done", "sha", "changelog", "branch"} | {"status": "rejected"|"failed", "reason"}."""
+def build(job: dict, push: bool = True, report=lambda step, message: None) -> dict:
+    """Returns {"status": "done", "sha", "changelog", "branch"} | {"status": "rejected"|"failed", "reason"}.
+    report(step, message) is called at every step; the platform shows the message live on the idea's card."""
     sid, author = job["suggestion"], job["author"]
     branch = f"suggestion/{sid}-{re.sub(r'[^A-Za-z0-9-]', '', author)[:30]}"
     wt = checkout(job["repo"], job["base_sha"], branch, sid)
@@ -209,6 +210,7 @@ def build(job: dict, push: bool = True) -> dict:
     idea = f"<player_idea author=\"@{author}\">\nWhat if {job['title']}\n{job.get('body', '')}\n</player_idea>"
     log(f"#{sid} {job['repo']}@{job['base_sha'][:7]} on {branch}: what if {job['title']}")
 
+    report("classify", "Checking the idea…")
     empty = WORK / "empty"
     empty.mkdir(parents=True, exist_ok=True)
     c = agent("classifier", f"Game: {job.get('game_name', job['game'])}\n\nConstitution:\n{constitution}\n\n{idea}", empty)
@@ -222,10 +224,17 @@ def build(job: dict, push: bool = True) -> dict:
     for review in range(1, MAX_REVIEW_ROUNDS + 1):
         g = None
         for rnd in range(1, MAX_BUILD_ROUNDS + 1):
+            if not feedback:
+                report("build", "Writing the code…")
+            elif feedback.startswith("Code review"):
+                report("build", "Changing the code after the review…")
+            else:
+                report("build", f"Fixing what the tests found (try {rnd} of {MAX_BUILD_ROUNDS})…")
             built = agent("builder", task + (f"\n\nFix this first:\n{feedback}" if feedback else ""), wt)
             if built["status"] == "blocked":
                 return {"status": "rejected", "reason": built.get("blocked") or "This idea can't be built within the game's rules."}
             undone = guard(wt, job["base_sha"])
+            report("gates", "Running the tests and the bot playtest…")
             g = gates(wt)
             log(f"#{sid} build round {rnd}: gates {'green' if g['ok'] else 'red'}{f', undid {undone}' if undone else ''}")
             if g["ok"] and not undone:
@@ -237,6 +246,7 @@ def build(job: dict, push: bool = True) -> dict:
         if not changed_files(wt, job["base_sha"]):
             return {"status": "failed", "reason": "The builder made no changes."}
 
+        report("review", "Reviewing the change…")
         v = agent("reviewer", f"Base commit: {job['base_sha']}\n\n{task}\n\nBuilder summary: {built['summary']}\n"
                               f"Changelog for players: {built['changelog']}", wt)
         if v["approve"]:
@@ -246,6 +256,7 @@ def build(job: dict, push: bool = True) -> dict:
     else:
         return {"status": "failed", "reason": "The review kept finding problems: " + "; ".join(v["blocking"])[:400]}
 
+    report("save", "Saving the new version…")
     run(["git", "add", "-A"], cwd=wt)
     msg = (f"What if {job['title']}\n\n{built['changelog']}\n\nSuggested by @{author} (Evolvia idea #{sid}). "
            f"Built by the Evolvia AI builder, checked by the gates and an AI reviewer.\n\n{coauthor(author)}")
@@ -278,15 +289,22 @@ def run_loop(once: bool) -> None:
             continue
         job = api("POST", "/api/worker/next")["job"]
         if job:
+            sid = job["suggestion"]
+
+            def report(step: str, message: str) -> None:
+                try:
+                    api("POST", f"/api/worker/{sid}/progress", json={"step": step, "message": message})
+                except Exception as e:  # noqa: BLE001 — progress is nice to have, never stop a build for it
+                    log(f"#{sid} progress not sent: {e}")
+
             try:
-                result = build(job)
+                result = build(job, report=report)
             except Exception as e:  # noqa: BLE001 — any crash is reported as a failed build
                 result = {"status": "failed", "reason": f"Builder crashed: {e}"[:500]}
                 log(f"#{job['suggestion']} crashed: {e}")
             payload = {k: result[k] for k in ("status", "sha", "changelog") if k in result}
             if "reason" in result:
                 payload["reason"] = result["reason"]
-            sid = job["suggestion"]
             answer = api("POST", f"/api/worker/{sid}/result", json=payload)
             log(f"#{sid} -> platform: {json.dumps(answer)}")
         if once:

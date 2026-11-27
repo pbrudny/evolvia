@@ -455,6 +455,31 @@ def worker_next(request: Request):
                     "base_version": v["id"], "base_sha": v["sha"], "title": s["title"], "body": s["body"], "author": s["login"]}}
 
 
+@app.post("/api/worker/{sid}/progress")
+async def worker_progress(request: Request, sid: int):
+    """A build step, shown live on the idea's card: {"step": "build", "message": "Writing the code (try 1 of 3)…"}."""
+    need_worker(request)
+    body = await request.json()
+    step, message = str(body.get("step", ""))[:40], str(body.get("message", ""))[:200]
+    with db.connect() as conn:
+        s = conn.execute("SELECT * FROM suggestions WHERE id = ?", (sid,)).fetchone()
+        if not s or s["status"] != "building":
+            raise HTTPException(400, "This idea is not being built")
+        set_status(conn, sid, "building", message)
+        db.emit(conn, "BuildProgress", "worker", game=s["game"], suggestion=sid, step=step, message=message)
+    return {"ok": True}
+
+
+@app.get("/api/games/{slug}/builds")
+def builds_status(slug: str):
+    """Ideas that left the open list: status, live note and the new version. Polled by the game page."""
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT id, status, build_note, result_version, COALESCE(updated_at, created_at) AS updated_at FROM suggestions "
+            "WHERE game = ? AND status != 'open' ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 20", (slug,)).fetchall()
+    return [dict(r) for r in rows]
+
+
 @app.post("/api/worker/{sid}/result")
 async def worker_result(request: Request, sid: int):
     """status: done (sha + changelog) | rejected (reason shown to the player) | failed (reason)."""
