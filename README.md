@@ -4,6 +4,8 @@
 
 Evolvia is a game that its players build. Play the current version, reach a milestone, and suggest a change ("What if…?"). Other players vote, AI agents build the best suggestions, automatic checks and a review make sure the game still works, and a few minutes later there is a new version to play. Every version stays playable, so the game grows into a tree of versions and can turn into something completely different.
 
+![One suggestion's trip through Evolvia: people play, suggest and vote; AI builds, checks and releases](docs/evolvia-loop.png)
+
 It starts with no game at all: players propose game ideas, the AI builds small prototypes of the top ideas, everyone plays them and votes, and the winner becomes the first game.
 
 A class project for Event Driven Programming at ATA. Every step is an event, so students can build their own services on top of it.
