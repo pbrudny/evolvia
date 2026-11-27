@@ -65,14 +65,25 @@ def log(msg: str) -> None:
     print(f"[{datetime.now():%H:%M:%S}] {msg}", flush=True)
 
 
-def run(cmd: list[str], cwd: Path | None = None, check: bool = True, timeout: int = 600) -> subprocess.CompletedProcess:
-    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+def run(cmd: list[str], cwd: Path | None = None, check: bool = True, timeout: int = 600,
+        env: dict | None = None) -> subprocess.CompletedProcess:
+    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
     if check and p.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd[:3])} failed: {(p.stderr or p.stdout)[-800:]}")
     return p
 
 
 # ---------- agents ----------
+
+def claude_env() -> dict:
+    """The subscription login is stored for an explicit CLAUDE_CONFIG_DIR. launchd starts the worker without it, and then
+    `claude -p` answers "Not logged in", so always set it (EVOLVIA_CLAUDE_CONFIG_DIR overrides, default ~/.claude)."""
+    env = dict(os.environ)
+    env["CLAUDE_CONFIG_DIR"] = (os.environ.get("EVOLVIA_CLAUDE_CONFIG_DIR") or os.environ.get("CLAUDE_CONFIG_DIR")
+                                or str(Path.home() / ".claude"))
+    env.setdefault("USER", os.environ.get("LOGNAME") or Path.home().name)
+    return env
+
 
 def schema_errors(schema: dict, v, path: str = "") -> list[str]:
     if "enum" in schema:
@@ -118,7 +129,7 @@ def agent(name: str, prompt: str, cwd: Path) -> dict:
     if ALLOW.get(name):
         flags += ["--allowedTools", *ALLOW[name]]
     # The prompt goes right after -p: --tools and --allowedTools take lists and would swallow a later prompt.
-    call = lambda text: run(["claude", "-p", text, *flags], cwd=cwd, check=False, timeout=1800)  # noqa: E731
+    call = lambda text: run(["claude", "-p", text, *flags], cwd=cwd, check=False, timeout=1800, env=claude_env())  # noqa: E731
     t0 = time.time()
     p = call(full)
     if not p.stdout.strip():
@@ -146,6 +157,14 @@ def checkout(repo: str, base_sha: str, branch: str, sid) -> Path:
         run(["git", "clone", "--quiet", f"https://github.com/{repo}.git", str(mirror)])
     else:
         run(["git", "fetch", "--quiet", "origin"], cwd=mirror)
+    # A retry reuses the branch name: remove the worktree an earlier (failed) build left on it.
+    current = None
+    for line in run(["git", "worktree", "list", "--porcelain"], cwd=mirror).stdout.splitlines() + [""]:
+        if line.startswith("worktree "):
+            current = line.split(" ", 1)[1]
+        elif line == f"branch refs/heads/{branch}" and current:
+            run(["git", "worktree", "remove", "--force", current], cwd=mirror, check=False)
+    run(["git", "worktree", "prune"], cwd=mirror, check=False)
     wt = WORK / "builds" / f"{sid}-{datetime.now():%Y%m%d-%H%M%S}"
     wt.parent.mkdir(parents=True, exist_ok=True)
     run(["git", "worktree", "add", "--quiet", "-B", branch, str(wt), base_sha], cwd=mirror)
