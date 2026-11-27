@@ -482,6 +482,7 @@ def main() -> None:
     r.add_argument("--once", action="store_true")
     n = sub.add_parser("notify", help="post new platform events to Slack #evolvia")
     n.add_argument("--dry-run", action="store_true")
+    n.add_argument("--history-from", type=int, help="one-off backfill from this event id (skips failed builds)")
     t = sub.add_parser("try")
     t.add_argument("--repo", required=True)
     t.add_argument("--ref", default="main")
@@ -492,7 +493,7 @@ def main() -> None:
     args = p.parse_args()
     if args.cmd == "notify":
         from .notify import notify
-        notify(dry_run=args.dry_run)
+        notify(dry_run=args.dry_run, history_from=args.history_from)
         return
     if not shutil.which("docker") or not shutil.which("claude"):
         sys.exit("needs docker and the claude CLI")

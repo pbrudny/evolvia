@@ -119,13 +119,17 @@ def render(e: dict, names: dict) -> tuple[str, str | None, bool] | None:
     return None
 
 
-def notify(dry_run: bool = False, log=print) -> int:
-    """Post new events. Returns how many messages were posted."""
+def notify(dry_run: bool = False, log=print, history_from: int | None = None) -> int:
+    """Post new events. Returns how many messages were posted.
+    history_from: replay from this event id (a one-off backfill), skipping failed builds and repeated
+    "sent to the builder" messages, so the channel shows only idea -> decision -> new version."""
     token = _load_token()
     if not token:
         log("notify: no Slack token, skipping")
         return 0
     state = json.loads(STATE.read_text()) if STATE.exists() else {}
+    if history_from is not None:
+        state = {**state, "cursor": history_from, "threads": state.get("threads", {})}
     events = httpx.get(f"{PLATFORM}/api/events", params={"after": state.get("cursor", 0), "limit": 500}, timeout=30).json()
     if "cursor" not in state:  # first run: start from now
         state = {"cursor": events[-1]["id"] if events else 0, "threads": {}}
@@ -140,8 +144,15 @@ def notify(dry_run: bool = False, log=print) -> int:
     channel = state.get("channel") or slack.channel_id(CHANNEL)
     state["channel"] = channel
     names = {g["slug"]: g["name"] for g in _games()}
-    posted = 0
+    posted, accepted = 0, set()
     for e in events:
+        if history_from is not None:
+            sid = e["data"].get("suggestion")
+            if e["type"] == "BuildFailed" or (e["type"] == "SuggestionAccepted" and sid in accepted):
+                state["cursor"] = e["id"]
+                continue
+            if e["type"] == "SuggestionAccepted":
+                accepted.add(sid)
         if e["type"] == "VersionDeployed":  # remember the changelog for BuildSucceeded / VersionsMerged
             names[("changelog", e["data"].get("version"))] = e["data"].get("changelog", "")
         msg = render(e, names)
