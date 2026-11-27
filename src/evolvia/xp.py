@@ -14,17 +14,17 @@ DECAY_PER_MONTH = 0.8
 # (name, current XP needed, suggestions per day, bonus votes on own ideas, vote weight)
 LEVELS = [
     ("Player", 0, 1, 0, 1),
-    ("Contributor", 20, 1, 0, 1),
-    ("Builder", 100, 2, 3, 1),
-    ("Architect", 300, 3, 3, 1),
-    ("Curator", 600, 3, 3, 2),
+    ("Contributor", 20, 2, 0, 1),
+    ("Builder", 100, 3, 3, 1),
+    ("Architect", 300, 4, 3, 1),
+    ("Curator", 600, 4, 3, 2),
 ]
 UNLOCKS = {
     "Player": "play, vote, 1 idea per day after your first milestone",
-    "Contributor": "1 idea per day",
-    "Builder": "2 ideas per day, your ideas start with +3 votes",
-    "Architect": "3 ideas per day, bigger changes (new mechanics)",
-    "Curator": "3 ideas per day, your vote counts double",
+    "Contributor": "2 ideas per day",
+    "Builder": "3 ideas per day, your ideas start with +3 votes",
+    "Architect": "4 ideas per day, bigger changes (new mechanics)",
+    "Curator": "4 ideas per day, your vote counts double",
 }
 
 

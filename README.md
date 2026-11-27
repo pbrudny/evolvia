@@ -56,7 +56,7 @@ evolvia-admin list
 
 XP follows DESIGN.md §10. It is awarded automatically: +5 for the first milestone on a version, +1 when someone votes for your idea, +30 when it goes live, and +1 for each new player on your version (max 50). Bugs, prototype rounds and rollbacks are awarded by hand with `evolvia-admin xp`. Every award is a row in the append-only `xp` table and an `XpAwarded` event (`LevelReached` on a level-up).
 
-Current XP loses 20% per month, lifetime XP never does. The level comes from current XP and sets ideas per day: Player 1 (after the first milestone); Contributor (20) 1; Builder (100) 2 and +3 votes on new ideas; Architect (300) 3; Curator (600) 3 and double votes.
+Current XP loses 20% per month, lifetime XP never does. The level comes from current XP and sets ideas per day: Player 1 (after the first milestone); Contributor (20) 2; Builder (100) 3 and +3 votes on new ideas; Architect (300) 4; Curator (600) 4 and double votes.
 
 Pages: `/p/<login>` (level, XP history, live ideas), `/g/<slug>/tree` (the Multiverse). Admins: `/admin/xp.csv` (login, name, level, current, lifetime, live ideas, confirmed bugs). Names come from an optional `DATA_DIR/roster.json` (`{"github-login": "Student Name"}`).
 

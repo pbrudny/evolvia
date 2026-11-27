@@ -292,7 +292,7 @@ def test_xp_from_milestone_vote_and_live():
         reasons = sorted(r["reason"] for r in conn.execute("SELECT reason FROM xp WHERE login = 'alice'"))
     assert reasons == ["live", "milestone", "vote"]
     t = xp_of("alice")
-    assert t["lifetime"] == 36 and t["current"] == 36 and t["level"] == "Contributor" and t["per_day"] == 1
+    assert t["lifetime"] == 36 and t["current"] == 36 and t["level"] == "Contributor" and t["per_day"] == 2
     types = [e["type"] for e in TestClient(server.app, base_url="http://platform.test").get("/api/events").json()]
     assert "XpAwarded" in types and "LevelReached" in types
 
@@ -334,7 +334,8 @@ def test_levels_give_bonus_votes_and_double_votes(monkeypatch):
     gina, hank = client_as("gina", monkeypatch), client_as("hank", monkeypatch)
     assert gina.post(f"/g/{GAME}/v/{V0}/suggest", data={"title": "lasers everywhere"}, follow_redirects=False).status_code == 303
     assert gina.post(f"/g/{GAME}/v/{V0}/suggest", data={"title": "a second idea"}, follow_redirects=False).status_code == 303
-    assert gina.post(f"/g/{GAME}/v/{V0}/suggest", data={"title": "a third idea"}, follow_redirects=False).status_code == 429
+    assert gina.post(f"/g/{GAME}/v/{V0}/suggest", data={"title": "a third idea"}, follow_redirects=False).status_code == 303
+    assert gina.post(f"/g/{GAME}/v/{V0}/suggest", data={"title": "a fourth idea"}, follow_redirects=False).status_code == 429
     with db.connect() as conn:
         sid = conn.execute("SELECT id, bonus_votes FROM suggestions WHERE title = 'lasers everywhere'").fetchone()
     assert sid["bonus_votes"] == 3
