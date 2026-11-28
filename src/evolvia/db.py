@@ -161,6 +161,8 @@ MIGRATIONS = [
     ("games", "kind", "TEXT NOT NULL DEFAULT 'game'"),             # game | prototype
     ("games", "round", "INTEGER"),                                  # prototypes: their round
     ("versions", "merged_from", "TEXT"),                            # JSON list of version ids for merged versions
+    ("suggestions", "merge_versions", "TEXT"),                      # merge ideas: JSON list of version ids, first = base
+    ("merges", "suggestion", "INTEGER"),                            # the idea a merge was built for (players' merge ideas)
 ]
 
 

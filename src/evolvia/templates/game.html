@@ -6,6 +6,7 @@
   <p class="muted">
     Version <code>{{ v.id }}</code>{% if v.id == game.main_version %} · <span class="pill">main</span>{% else %} · <a href="/g/{{ game.slug }}">go to the main version</a>{% endif %}
     · <a href="/g/{{ game.slug }}/tree?here={{ v.id }}">Multiverse</a>
+    {% if not proto %}· <a href="/g/{{ game.slug }}/tree?here={{ v.id }}#merge-form">⑂ Merge versions</a>{% endif %}
     {% if v.credited_login %} · idea by <a href="https://github.com/{{ v.credited_login }}">@{{ v.credited_login }}</a>{% endif %}
   </p>
 </div>
@@ -75,12 +76,13 @@
     <li>
       <div class="votes">{{ s.votes }}</div>
       <div class="idea">
-        <strong>What if {{ s.title }}</strong>
-        {% if s.body %}<p>{{ s.body }}</p>{% endif %}
-        <span class="muted">by @{{ s.login }} · on <code>{{ s.base_version }}</code></span>
+        <strong>{% if s.mv %}<span class="pill">⑂ merge</span> {% endif %}What if {{ s.title }}</strong>
+        {% if s.mv %}<p>{% for x in s.mv %}<a href="/g/{{ game.slug }}/v/{{ x }}"><code>{{ x }}</code></a>{{ ' + ' if not loop.last }}{% endfor %}</p>
+        {% elif s.body %}<p>{{ s.body }}</p>{% endif %}
+        <span class="muted">by @{{ s.login }}{% if not s.mv %} · on <code>{{ s.base_version }}</code>{% endif %}</span>
       </div>
       <div class="actions">
-      {% if me and eligible and s.login != me and not s.voted and s.base_version == v.id %}
+      {% if s.can_vote %}
       <form method="post" action="/suggestions/{{ s.id }}/vote"><button class="small">Vote</button></form>
       {% elif s.voted %}<span class="pill">voted</span>{% endif %}
       {% if is_admin %}
@@ -120,6 +122,7 @@
 <section id="versions">
   <h2>Versions</h2>
   <p>{{ versions|length }} version{{ '' if versions|length == 1 else 's' }} so far. <a href="/g/{{ game.slug }}/tree?here={{ v.id }}">Open the Multiverse</a> to see how the game branched and play any version.</p>
+  {% if not proto and versions|length >= 2 %}<p><a class="button small" href="/g/{{ game.slug }}/tree?here={{ v.id }}#merge-form">⑂ Merge versions</a> <span class="muted">Like two versions? Suggest combining them into one.</span></p>{% endif %}
   {% if is_admin and v.id != game.main_version %}<form class="inline" method="post" action="/g/{{ game.slug }}/v/{{ v.id }}/promote"><button class="small">Make this the main version</button></form>{% endif %}
 </section>
 {% endblock %}

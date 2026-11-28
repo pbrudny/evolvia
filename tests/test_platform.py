@@ -467,7 +467,7 @@ def test_merge_versions(monkeypatch):
     dave = client_as("dave", monkeypatch)
     assert dave.post(f"/g/{GAME}/merge", data={"versions": [V0, V1]}, follow_redirects=False).status_code == 403
     boss = client_as("boss", monkeypatch)
-    assert "Merge selected" in boss.get(f"/g/{GAME}/tree").text and "Merge selected" not in dave.get(f"/g/{GAME}/tree").text
+    assert "Merge now (admin)" in boss.get(f"/g/{GAME}/tree").text and "Merge now (admin)" not in dave.get(f"/g/{GAME}/tree").text
     assert boss.post(f"/g/{GAME}/merge", data={"versions": [V1]}, follow_redirects=False).status_code == 400   # one only
     assert boss.post(f"/g/{GAME}/merge", data={"versions": [V1, "nope"]}, follow_redirects=False).status_code == 404
     assert boss.post(f"/g/{GAME}/merge", data={"versions": [V1, V0]}, follow_redirects=False).status_code == 303
@@ -489,6 +489,55 @@ def test_merge_versions(monkeypatch):
 
 
 # ---------- Slack announcer ----------
+
+def test_players_suggest_merges_as_ideas(monkeypatch):
+    with db.connect() as conn:
+        conn.execute("UPDATE suggestions SET status = 'live' WHERE status IN ('open', 'accepted', 'building')")
+        conn.execute("UPDATE merges SET status = 'live' WHERE status IN ('queued', 'building')")
+    frank = client_as("frank", monkeypatch)
+    page = frank.get(f"/g/{GAME}/tree").text
+    assert 'name="versions"' in page and "Suggest this merge" in page and "Merge now (admin)" not in page
+    r = frank.post(f"/g/{GAME}/merge-idea", data={"versions": [V0, V1]}, follow_redirects=False)
+    assert r.status_code == 403                                      # no milestone in either version yet
+    s1 = frank.post("/api/sessions", json={"version": V1, "seed": 1}).json()["session"]
+    age_session(s1, 60)
+    frank.post(f"/api/sessions/{s1}/milestone", json={"id": "level3"})
+    assert frank.post(f"/g/{GAME}/merge-idea", data={"versions": [V0]}, follow_redirects=False).status_code == 400
+    r = frank.post(f"/g/{GAME}/merge-idea", data={"versions": [V0, V1]}, follow_redirects=False)
+    assert r.status_code == 303
+    with db.connect() as conn:
+        idea = conn.execute("SELECT * FROM suggestions WHERE login = 'frank' AND merge_versions IS NOT NULL").fetchone()
+    assert idea["title"] == "versions aaaaaaa and bbbbbbb were combined into one" and idea["base_version"] == V0
+    # the same merge again doesn't make a duplicate
+    frank.post(f"/g/{GAME}/merge-idea", data={"versions": [V0, V1]}, follow_redirects=False)
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM suggestions WHERE merge_versions IS NOT NULL AND status = 'open'").fetchone()[0] == 1
+    page = frank.get(f"/g/{GAME}/v/{V1}").text
+    assert "⑂ merge" in page and "⑂ Merge versions" in page
+
+    # dave reached a milestone in V0 (test_votes) and may vote; the merge idea is shown with a vote button on V1 too
+    dave = client_as("dave", monkeypatch)
+    assert dave.post(f"/suggestions/{idea['id']}/vote", follow_redirects=False).status_code == 303
+
+    boss = client_as("boss", monkeypatch)
+    boss.post(f"/suggestions/{idea['id']}/accept", follow_redirects=False)
+    plain = TestClient(server.app, base_url="http://platform.test")
+    job = plain.post("/api/worker/next", headers=W).json()["job"]
+    assert job["kind"] == "merge" and [v["id"] for v in job["versions"]] == [V0, V1] and job["author"] == "frank"
+    plain.post(job["progress"], headers=W, json={"message": "Merging spark-run-bbbbbbb…"})
+    row = next(b for b in plain.get(f"/api/games/{GAME}/builds").json() if b["id"] == idea["id"])
+    assert row["status"] == "building" and row["build_note"] == "Merging spark-run-bbbbbbb…"
+
+    installed = {}
+    monkeypatch.setattr(server, "install", lambda game, repo, sha, **kw: installed.update(kw) or f"{game}-{sha[:7]}")
+    r = plain.post(job["result"], headers=W, json={"status": "done", "sha": "e" * 40, "changelog": "Combo and d-pad together."})
+    assert r.json()["version"] == "spark-run-eeeeeee"
+    assert installed["credited_login"] == "frank" and installed["suggestion_id"] == idea["id"]
+    with db.connect() as conn:
+        done = conn.execute("SELECT status, result_version FROM suggestions WHERE id = ?", (idea["id"],)).fetchone()
+        assert (done["status"], done["result_version"]) == ("live", "spark-run-eeeeeee")
+        assert conn.execute("SELECT COUNT(*) FROM xp WHERE login = 'frank' AND reason = 'live'").fetchone()[0] == 1
+
 
 def test_slack_messages_escape_player_text():
     from evolvia import notify

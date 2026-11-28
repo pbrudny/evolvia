@@ -4,7 +4,7 @@
 <li class="{{ 'mainline' if n.on_main_line }}">
   <div class="vcard{{ ' is-main' if n.id == game.main_version }}{{ ' is-here' if n.id == here }}">
     <div class="vhead">
-      {% if can_merge %}<input type="checkbox" class="pick" name="versions" value="{{ n.id }}" form="merge-form" aria-label="Pick {{ n.id }} to merge">{% endif %}
+      {% if can_pick %}<input type="checkbox" class="pick" name="versions" value="{{ n.id }}" form="merge-form" aria-label="Pick {{ n.id }} to merge">{% endif %}
       <code>{{ n.id }}</code>
       {% if n.id == game.main_version %}<span class="pill">main</span>{% endif %}
       {% if n.id == here %}<span class="pill here">you were here</span>{% endif %}
@@ -29,11 +29,16 @@
   <p class="muted">{{ count }} version{{ '' if count == 1 else 's' }}. Every idea that was built is a branch, and every branch stays playable. The highlighted line leads to the main version, the one new players get.</p>
   <p><a href="/g/{{ game.slug }}">◀ Back to the main version</a></p>
 </div>
-{% if can_merge %}
-<form id="merge-form" class="merge-bar" method="post" action="/g/{{ game.slug }}/merge">
-  <span>Tick 2 to 4 versions, then</span> <button class="small">Merge selected</button>
-  <span class="muted">The AI builder combines them into one version that keeps every feature. The first ticked version (from the top) is the base.</span>
+{% if can_pick %}
+<form id="merge-form" class="merge-bar" method="post" action="/g/{{ game.slug }}/merge-idea">
+  <strong>Merge versions</strong>
+  <span>Tick 2 to 4 versions below, then</span>
+  {% if can_suggest %}<button class="small">Suggest this merge</button>{% else %}<span class="muted">(no ideas left today for your level)</span>{% endif %}
+  {% if can_merge %}<button class="small link" formaction="/g/{{ game.slug }}/merge">Merge now (admin)</button>{% endif %}
+  <span class="muted">A suggested merge becomes an idea: others vote on it, and Claude builds it like any idea. The AI builder combines the versions into one that keeps every feature; the first ticked version (from the top) is the base. You need a milestone in one of them.</span>
 </form>
+{% elif not me %}
+<p class="merge-bar muted"><a href="/login?next={{ request.url.path }}">Sign in</a> to suggest merging versions.</p>
 {% endif %}
 {% if merges %}
 <section id="merges">

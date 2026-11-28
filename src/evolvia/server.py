@@ -153,6 +153,14 @@ def eligible(conn, login: str | None, vid: str) -> bool:
 VOTES = "(s.bonus_votes + (SELECT COALESCE(SUM(weight), 0) FROM votes WHERE suggestion = s.id))"
 
 
+def eligible_any(conn, login: str | None, vids: list[str]) -> bool:
+    return any(eligible(conn, login, v) for v in vids)
+
+
+def merge_list(row) -> list[str]:
+    return json.loads(row["merge_versions"]) if row["merge_versions"] else []
+
+
 def suggestions_left(conn, login: str) -> int:
     """Ideas per day come from the level (DESIGN.md §10.3). Everyone gets at least 1 per day; the milestone
     check is separate."""
@@ -207,14 +215,18 @@ def game_version(request: Request, slug: str, vid: str):
         v = version_row(conn, vid)
         if not game or v["game"] != slug:
             raise HTTPException(404, "No such game version")
+        can_vote_here = eligible(conn, login, vid)
         mine = {r["milestone"] for r in conn.execute(
             "SELECT milestone FROM milestones WHERE login = ? AND version = ?", (login, vid))} if login else set()
-        suggestions = conn.execute(
+        suggestions = [{**dict(r), "mv": merge_list(r)} for r in conn.execute(
             f"SELECT s.*, {VOTES} AS votes, "
             "EXISTS(SELECT 1 FROM votes WHERE suggestion = s.id AND login = ?) AS voted "
             "FROM suggestions s WHERE s.game = ? AND s.status = 'open' ORDER BY votes DESC, s.id",
             (login or "", slug),
-        ).fetchall()
+        )]
+        for x in suggestions:  # who may vote: a milestone in the idea's version, or in any version of a merge idea
+            x["can_vote"] = bool(login) and x["login"] != login and not x["voted"] and (
+                eligible_any(conn, login, x["mv"]) if x["mv"] else (x["base_version"] == vid and can_vote_here))
         builds = conn.execute(
             f"SELECT s.*, {VOTES} AS votes FROM suggestions s "
             "WHERE s.game = ? AND s.status != 'open' ORDER BY COALESCE(s.updated_at, s.created_at) DESC LIMIT 20",
@@ -267,8 +279,10 @@ def game_tree(request: Request, slug: str, here: str = ""):
         count = conn.execute("SELECT COUNT(*) FROM versions WHERE game = ?", (slug,)).fetchone()[0]
         merges = [{**dict(m), "versions": json.loads(m["versions"])} for m in conn.execute(
             "SELECT * FROM merges WHERE game = ? ORDER BY id DESC LIMIT 10", (slug,))]
+        login = me(request)
+        can_suggest = bool(login) and game["kind"] == "game" and (is_admin(login) or suggestions_left(conn, login) > 0)
     return page(request, "tree.html", game=game, roots=roots, count=count, here=here, merges=merges,
-                can_merge=is_admin(me(request)))
+                can_merge=is_admin(login), can_pick=bool(login) and game["kind"] == "game", can_suggest=can_suggest)
 
 
 MERGE_MAX = 4
@@ -295,18 +309,69 @@ async def merge_request(request: Request, slug: str):
     return RedirectResponse(f"/g/{slug}/tree#merges", status_code=303)
 
 
-def merge_job(conn) -> dict | None:
-    m = conn.execute("SELECT * FROM merges WHERE status = 'queued' ORDER BY id LIMIT 1").fetchone()
-    if not m:
-        return None
+@app.post("/g/{slug}/merge-idea")
+async def merge_idea(request: Request, slug: str):
+    """Any player: suggest combining 2-4 versions. It becomes an idea in the normal list: others vote, and it is
+    built like any idea (Build this, or Claude's automatic pick at enough votes)."""
+    login = need_login(request)
+    form = await request.form()
+    picked = list(dict.fromkeys(str(v) for v in form.getlist("versions")))
+    if not 2 <= len(picked) <= MERGE_MAX:
+        raise HTTPException(400, f"Tick 2 to {MERGE_MAX} versions to merge")
+    with db.connect() as conn:
+        game = conn.execute("SELECT * FROM games WHERE slug = ?", (slug,)).fetchone()
+        if not game or game["kind"] != "game":
+            raise HTTPException(404, "No such game")
+        rows = {r["id"]: r for r in conn.execute(
+            f"SELECT * FROM versions WHERE game = ? AND id IN ({','.join('?' * len(picked))})", (slug, *picked))}
+        if len(rows) != len(picked):
+            raise HTTPException(404, "Unknown version")
+        if not eligible_any(conn, login, picked):
+            raise HTTPException(403, "Reach a milestone in one of these versions first")
+        if not is_admin(login) and suggestions_left(conn, login) <= 0:
+            raise HTTPException(429, "No ideas left today for your level. Vote for others in the meantime!")
+        dup = conn.execute("SELECT id FROM suggestions WHERE game = ? AND merge_versions = ? "
+                           "AND status IN ('open', 'accepted', 'building')", (slug, json.dumps(picked))).fetchone()
+        if dup:
+            return RedirectResponse(f"/g/{slug}/v/{picked[0]}#suggestions", status_code=303)
+        short = [p.removeprefix(f"{slug}-") for p in picked]
+        title = f"versions {', '.join(short[:-1])} and {short[-1]} were combined into one"
+        body = "Combine these versions so the new one keeps every feature:\n" + "\n".join(
+            f"- {p}: {rows[p]['changelog'] or 'the first version'}" for p in picked)
+        sid = conn.execute(
+            "INSERT INTO suggestions (game, base_version, login, title, body, merge_versions, bonus_votes, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (slug, picked[0], login, title, body[:2000], json.dumps(picked), xp.totals(conn, login)["bonus_votes"], db.now()),
+        ).lastrowid
+        db.emit(conn, "SuggestionSubmitted", login, game=slug, version=picked[0], suggestion=sid, title=title, merge=picked)
+    return RedirectResponse(f"/g/{slug}/v/{picked[0]}#suggestions", status_code=303)
+
+
+def merge_job_for(conn, m) -> dict:
+    """Mark a queued merge as building and describe it for the worker."""
     g = conn.execute("SELECT * FROM games WHERE slug = ?", (m["game"],)).fetchone()
     vs = [dict(version_row(conn, vid)) for vid in json.loads(m["versions"])]
     conn.execute("UPDATE merges SET status = 'building', build_note = 'The AI builder is merging', updated_at = ? WHERE id = ?",
                  (db.now(), m["id"]))
-    db.emit(conn, "BuildStarted", "worker", game=m["game"], merge=m["id"])
+    db.emit(conn, "BuildStarted", "worker", game=m["game"], merge=m["id"], suggestion=m["suggestion"])
     return {"kind": "merge", "merge": m["id"], "game": g["slug"], "game_name": g["name"], "repo": g["repo"], "author": m["login"],
             "versions": [{k: v[k] for k in ("id", "sha", "changelog", "credited_login")} for v in vs],
             "progress": f"/api/worker/merges/{m['id']}/progress", "result": f"/api/worker/merges/{m['id']}/result"}
+
+
+def merge_job(conn) -> dict | None:
+    m = conn.execute("SELECT * FROM merges WHERE status = 'queued' ORDER BY id LIMIT 1").fetchone()
+    return merge_job_for(conn, m) if m else None
+
+
+def merge_for_idea(conn, s) -> dict:
+    """A player's merge idea was picked for building: start a merge linked to it."""
+    mid = conn.execute(
+        "INSERT INTO merges (game, versions, login, suggestion, build_note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (s["game"], s["merge_versions"], s["login"], s["id"], "Waiting for the builder", db.now(), db.now())).lastrowid
+    set_status(conn, s["id"], "building", "The AI builder is merging")
+    m = conn.execute("SELECT * FROM merges WHERE id = ?", (mid,)).fetchone()
+    return merge_job_for(conn, m)
 
 
 @app.post("/api/worker/merges/{mid}/progress")
@@ -317,6 +382,10 @@ async def merge_progress(request: Request, mid: int):
         if conn.execute("UPDATE merges SET build_note = ?, updated_at = ? WHERE id = ? AND status = 'building'",
                         (message, db.now(), mid)).rowcount == 0:
             raise HTTPException(400, "This merge is not being built")
+        sid = conn.execute("SELECT suggestion FROM merges WHERE id = ?", (mid,)).fetchone()["suggestion"]
+        if sid:
+            set_status(conn, sid, "building", message)
+            db.emit(conn, "BuildProgress", "worker", suggestion=sid, merge=mid, step="merge", message=message)
     return {"ok": True}
 
 
@@ -332,22 +401,31 @@ async def merge_result(request: Request, mid: int):
         if body.get("status") != "done":
             note = str(body.get("reason", ""))[:500] or "The merge failed"
             conn.execute("UPDATE merges SET status = 'failed', build_note = ?, updated_at = ? WHERE id = ?", (note, db.now(), mid))
-            db.emit(conn, "BuildFailed", "worker", game=m["game"], merge=mid, reason=note)
+            if m["suggestion"]:
+                set_status(conn, m["suggestion"], "failed", note)
+            db.emit(conn, "BuildFailed", "worker", game=m["game"], merge=mid, suggestion=m["suggestion"], reason=note)
             return {"ok": True}
     versions = json.loads(m["versions"])
     try:
         vid = install(m["game"], g["repo"], str(body.get("sha", "")), parent=versions[0],
-                      changelog=str(body.get("changelog", ""))[:1000], actor="worker")
+                      changelog=str(body.get("changelog", ""))[:1000], actor="worker",
+                      credited_login=m["login"] if m["suggestion"] else None, suggestion_id=m["suggestion"])
     except Exception as e:  # noqa: BLE001
         with db.connect() as conn:
             conn.execute("UPDATE merges SET status = 'failed', build_note = ?, updated_at = ? WHERE id = ?",
                          (f"Install failed: {e}"[:500], db.now(), mid))
+            if m["suggestion"]:
+                set_status(conn, m["suggestion"], "failed", f"Install failed: {e}"[:500])
         raise HTTPException(502, f"install failed: {e}")
     with db.connect() as conn:
         conn.execute("UPDATE versions SET merged_from = ? WHERE id = ?", (json.dumps(versions), vid))
         conn.execute("UPDATE merges SET status = 'live', result_version = ?, build_note = ?, updated_at = ? WHERE id = ?",
                      (vid, str(body.get("changelog", ""))[:500], db.now(), mid))
         db.emit(conn, "VersionsMerged", "worker", game=m["game"], merge=mid, version=vid, versions=versions)
+        if m["suggestion"]:  # a player's merge idea: it went live like any idea
+            set_status(conn, m["suggestion"], "live", str(body.get("changelog", ""))[:500], result_version=vid)
+            db.emit(conn, "BuildSucceeded", "worker", game=m["game"], suggestion=m["suggestion"], version=vid, author=m["login"])
+            xp.award(conn, m["login"], xp.LIVE, "live", game=m["game"], version=vid)
     return {"ok": True, "version": vid}
 
 
@@ -359,6 +437,10 @@ def merge_retry(request: Request, mid: int):
         m = conn.execute("SELECT * FROM merges WHERE id = ?", (mid,)).fetchone()
         if not m or m["status"] != "failed":
             raise HTTPException(400, "Only failed merges can be retried")
+        if m["suggestion"]:  # retry the idea: it starts a fresh merge when the worker picks it up
+            conn.execute("UPDATE merges SET status = 'retried', updated_at = ? WHERE id = ?", (db.now(), mid))
+            set_status(conn, m["suggestion"], "accepted", "Waiting for the builder")
+            return RedirectResponse(f"/g/{m['game']}/tree#merges", status_code=303)
         conn.execute("UPDATE merges SET status = 'queued', build_note = 'Waiting for the builder', updated_at = ? WHERE id = ?",
                      (db.now(), mid))
     return RedirectResponse(f"/g/{m['game']}/tree#merges", status_code=303)
@@ -511,7 +593,7 @@ def vote(request: Request, sid: int):
             raise HTTPException(404, "No such open suggestion")
         if s["login"] == login:
             raise HTTPException(400, "You can't vote for your own idea")
-        if not eligible(conn, login, s["base_version"]):
+        if not (eligible_any(conn, login, merge_list(s)) if s["merge_versions"] else eligible(conn, login, s["base_version"])):
             raise HTTPException(403, "Reach a milestone in this version first")
         weight = xp.totals(conn, login)["vote_weight"]
         if conn.execute("INSERT OR IGNORE INTO votes (suggestion, login, weight, created_at) VALUES (?, ?, ?, ?)",
@@ -617,6 +699,8 @@ def worker_next(request: Request):
             s = auto_pick(conn)
         if not s:
             return {"job": None}
+        if s["merge_versions"]:
+            return {"job": merge_for_idea(conn, s)}
         g = conn.execute("SELECT * FROM games WHERE slug = ?", (s["game"],)).fetchone()
         v = version_row(conn, s["base_version"])
         set_status(conn, s["id"], "building", "The AI builder is working on it")

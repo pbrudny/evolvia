@@ -81,7 +81,7 @@ Channel `#evolvia` in the EDP Slack workspace (all students are members). `src/e
 
 ## Merging versions
 
-In the Multiverse (`/g/<slug>/tree`) an admin ticks 2–4 versions and clicks **Merge selected**. The worker merges their commits one by one on a branch `merge/<id>` (the first ticked version is the base and becomes the parent), the builder resolves conflicts with every version's changelog in hand, then the usual gates and reviewer run. The new version shows "Merged from …" in the tree, and its closing commit credits every idea's author with `Co-authored-by`. A failed merge can be retried.
+In the Multiverse (`/g/<slug>/tree`, also the **⑂ Merge versions** button on every game page) any signed-in player with a milestone in one of the versions ticks 2–4 of them and clicks **Suggest this merge**. That creates a merge idea in the normal Ideas list: others vote on it, it counts against the daily idea limit, and it is built like any idea (Build this, or Claude's automatic pick at enough votes); the idea's card shows the merge progress, and when it goes live the player gets the credit and XP. An admin can also skip the vote with **Merge now (admin)**. The worker merges their commits one by one on a branch `merge/<id>` (the first ticked version is the base and becomes the parent), the builder resolves conflicts with every version's changelog in hand, then the usual gates and reviewer run. The new version shows "Merged from …" in the tree, and its closing commit credits every idea's author with `Co-authored-by`. A failed merge can be retried.
 
 ## Idea rounds and prototype rounds
 
